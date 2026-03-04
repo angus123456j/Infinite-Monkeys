@@ -27,7 +27,11 @@ const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 // CORS configuration - allow requests from client
 app.use(
   cors({
-    origin: "http://localhost:5173", // Vite dev server
+    origin: [
+      "http://localhost:5173",
+      "http://localhost:5174",
+      "http://localhost:5175",
+    ],
     methods: ["POST", "GET"],
     allowedHeaders: ["Content-Type", "X-Shared-Secret"],
   })
@@ -38,7 +42,7 @@ app.use(express.json());
 // Rate limiting middleware
 const limiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  max: 10, // 10 requests per minute per IP
+  max: 60, // 60 requests per minute per IP
   message: {
     error: "Too many requests, please try again later.",
   },

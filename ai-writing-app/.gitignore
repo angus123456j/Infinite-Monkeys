@@ -3,3 +3,8 @@ dist
 *.local
 .env
 .env.*
+
+# Large media (use mp4 instead of gif)
+**/monkeygiff.gif
+ai-writing-app/client/public/models/antique_desk.glb
+client/public/models/antique_desk.glb

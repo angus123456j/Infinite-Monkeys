@@ -17,8 +17,11 @@
     "@tiptap/pm": "^3.19.0",
     "@tiptap/react": "^3.19.0",
     "@tiptap/starter-kit": "^3.19.0",
+    "@types/three": "^0.183.1",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4"
+    "react-dom": "^19.2.4",
+    "react-router-dom": "^7.13.1",
+    "three": "^0.183.1"
   },
   "devDependencies": {
     "@types/react": "^19.2.13",
