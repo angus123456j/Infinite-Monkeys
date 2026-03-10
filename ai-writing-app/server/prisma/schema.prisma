@@ -1,0 +1,44 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model Document {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  title     String
+  content   String   @db.Text
+  folderId  String?
+}
+
+model Context {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  title       String
+  description String    @db.Text
+  tags        Json      @default("[]")
+  lastUsedAt  DateTime?
+}
+
+model MonkeyAgent {
+  id           String   @id @default(cuid())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  name         String
+  role         String
+  strengths    String   @db.Text
+  avatar       String?  @db.VarChar(512)
+  defaultPrompt String  @db.Text
+  identity     String   @db.Text
+  behavior     String   @db.Text
+  constraints  String   @db.Text
+}

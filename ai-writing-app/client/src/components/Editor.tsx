@@ -20,8 +20,8 @@ const PAGE_MARGIN = 72;
 const LINE_HEIGHT = 17;
 /** Highlight color used for pending rewrites */
 const HIGHLIGHT_COLOR = "#ffcdd2";
-/** Initial number of spacer paragraphs for loading state */
-const INITIAL_SPACER_COUNT = 5;
+/** Initial number of spacer paragraphs for loading state (kept small so short rewrites don't add big gaps) */
+const INITIAL_SPACER_COUNT = 2;
 
 let nextRewriteId = 0;
 
@@ -61,6 +61,43 @@ function randomMonkeyId(): string {
   return styles[Math.floor(Math.random() * styles.length)]();
 }
 
+// Compute where spacer paragraphs should be inserted. If the selection ends
+// in the middle of a word (e.g. "C|oleridge"), we move the spacer insert
+// position back to the start of that word so the *entire* word appears
+// below the inline suggestion rather than being split.
+function computeSpacerInsertPos(doc: any, selTo: number): number {
+  const maxSteps = 64; // safety guard
+  const charBefore = doc.textBetween(Math.max(0, selTo - 1), selTo, " ");
+  const charAfter = doc.textBetween(selTo, selTo + 1, " ");
+  const isWordChar = (ch: string) => !!ch && /\w/.test(ch);
+
+  // Case 1: selection ends RIGHT BEFORE a word (start-of-word boundary),
+  // e.g. "... materialism. |Coleridge". In that case we want the entire
+  // following word to move below the suggestion, so we insert spacers
+  // *before* the first character of that word.
+  if (!isWordChar(charBefore) && isWordChar(charAfter)) {
+    return selTo;
+  }
+
+  // Case 2: selection ends in the MIDDLE of a word, e.g. "C|oleridge".
+  // Walk backwards to the beginning of the word and insert spacers there.
+  if (isWordChar(charBefore) && isWordChar(charAfter)) {
+    let cur = selTo;
+    for (let i = 0; i < maxSteps && cur > 0; i++) {
+      const prev = doc.textBetween(cur - 1, cur, " ");
+      if (!prev || /\s/.test(prev) || /[.,!?;:]/.test(prev)) {
+        break;
+      }
+      cur--;
+    }
+    return cur;
+  }
+
+  // Case 3: at a normal boundary (end of word/sentence, or newline). Insert
+  // spacers just after the selection so the next word/paragraph stays below.
+  return selTo + 1;
+}
+
 interface PendingRewrite {
   id: number;
   monkeyId: string;
@@ -76,7 +113,16 @@ interface PendingRewrite {
   spacerTo: number;
 }
 
-function Editor() {
+const SAVE_DEBOUNCE_MS = 1500;
+const PERIODIC_SAVE_MS = 30_000;
+
+interface EditorProps {
+  docId?: string;
+  initialContent?: string;
+  onSaveContent?: (content: string) => void;
+}
+
+function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProps) {
   const editor = useEditor({
     extensions: [
       StarterKit,
@@ -87,13 +133,14 @@ function Editor() {
       FontFamily,
       FontSize,
     ],
-    content: "<p></p>",
+    content: initialContent,
     autofocus: true,
   });
 
   const contentRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
   const [pageCount, setPageCount] = useState(1);
+  const [contentVersion, setContentVersion] = useState(0);
 
   // Overlay state
   const [isOverlayOpen, setIsOverlayOpen] = useState(false);
@@ -112,11 +159,74 @@ function Editor() {
   const suggestionElRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const revealTimersRef = useRef<Record<number, number>>({});
   const revealContentRefs = useRef<Record<number, HTMLElement | null>>({});
+  // Track how many extra spacer paragraphs we've added per rewrite so we can
+  // keep nudging content down until there is no overlap, without adding an
+  // unbounded number of blank lines.
+  const spacerAdjustedRef = useRef<Record<number, number>>({});
 
   // Keep ref in sync with state
   useEffect(() => {
     pendingRewritesRef.current = pendingRewrites;
   }, [pendingRewrites]);
+
+  // Track the latest HTML so we can save without touching the editor DOM
+  const lastHtmlRef = useRef<string>(initialContent);
+  const dirtyRef = useRef(false);
+
+  // Robust auto-save: debounced on edit, periodic 30s fallback,
+  // visibilitychange + beforeunload for tab/navigation saves,
+  // and safe unmount flush that avoids DOM access.
+  useEffect(() => {
+    if (!editor || !docId || !onSaveContent) return;
+
+    let debounceTimer: number | undefined;
+    let periodicTimer: number | undefined;
+
+    const save = () => {
+      if (!dirtyRef.current) return;
+      dirtyRef.current = false;
+      onSaveContent(lastHtmlRef.current);
+    };
+
+    const scheduleDebounceSave = () => {
+      if (debounceTimer != null) clearTimeout(debounceTimer);
+      debounceTimer = window.setTimeout(save, SAVE_DEBOUNCE_MS);
+    };
+
+    const onEditorUpdate = () => {
+      try {
+        lastHtmlRef.current = editor.getHTML();
+      } catch {
+        return;
+      }
+      dirtyRef.current = true;
+      scheduleDebounceSave();
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") save();
+    };
+
+    const onBeforeUnload = () => {
+      save();
+    };
+
+    editor.on("update", onEditorUpdate);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("beforeunload", onBeforeUnload);
+
+    periodicTimer = window.setInterval(save, PERIODIC_SAVE_MS);
+
+    return () => {
+      editor.off("update", onEditorUpdate);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      if (debounceTimer != null) clearTimeout(debounceTimer);
+      if (periodicTimer != null) clearInterval(periodicTimer);
+      // Flush on unmount using the cached HTML (no DOM access)
+      save();
+    };
+  }, [editor, docId, onSaveContent]);
 
   /** Handle clicks on empty page area to jump cursor there */
   const handlePageClick = useCallback(
@@ -283,6 +393,7 @@ function Editor() {
       requestAnimationFrame(() => {
         paginateContent();
         updatePageCount();
+        setContentVersion((v) => v + 1);
       });
     };
 
@@ -310,15 +421,6 @@ function Editor() {
       if (!transaction.docChanged) return;
       const prev = pendingRewritesRef.current;
       if (prev.length === 0) return;
-
-      const sel = transaction.selection as { from?: number };
-      const cursorPos = sel?.from ?? 0;
-      const anyAfterSpacer = prev.some((rw) => cursorPos >= rw.spacerTo);
-      if (anyAfterSpacer) {
-        // #region agent log
-        fetch('http://127.0.0.1:7243/ingest/12f206ba-113d-4c02-ba79-bc5d13cdf020',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'848b57'},body:JSON.stringify({sessionId:'848b57',hypothesisId:'C',location:'Editor.tsx:transaction',message:'Typing below rewrite',data:{cursorPos,rewrites:prev.map(r=>({id:r.id,spacerTo:r.spacerTo}))},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
-      }
 
       const updated = prev.map((rw) => ({
         ...rw,
@@ -361,11 +463,9 @@ function Editor() {
           const docSize = editor.state.doc.content.size;
           const safeEnd = Math.min(rw.to, docSize);
           if (safeEnd <= 0) continue;
-          // Position at end of paragraph, not end of selection,
-          // so the suggestion doesn't cover trailing text in the same paragraph
-          const $to = editor.state.doc.resolve(safeEnd);
-          const endOfBlock = Math.min($to.end($to.depth), docSize);
-          const coords = editor.view.coordsAtPos(endOfBlock, -1);
+          // Position the suggestion directly under the end of the selected
+          // span, so it appears attached to the phrase you are rewriting.
+          const coords = editor.view.coordsAtPos(safeEnd, 1);
           positions[rw.id] = { top: coords.bottom - pageRect.top + 4 };
         } catch {
           // skip if position is invalid
@@ -374,7 +474,7 @@ function Editor() {
 
       setSuggestionPositions(positions);
     });
-  }, [editor, pendingRewrites]);
+  }, [editor, pendingRewrites, contentVersion]);
 
   // Measure actual suggestion element height and adjust spacers to prevent overlap
   useEffect(() => {
@@ -387,7 +487,6 @@ function Editor() {
       if (adjusting) return;
       adjusting = true;
 
-      let overlapCount = 0;
       for (const rw of pendingRewritesRef.current) {
         const el = suggestionElRefs.current[rw.id];
         if (!el) continue;
@@ -402,23 +501,37 @@ function Editor() {
 
           const contentAfter = editor.view.coordsAtPos(safePos, 1);
           const overlap = suggestionRect.bottom - contentAfter.top;
+          const approxRewriteLen =
+            (rw.rewriteText?.length ?? rw.originalText.length ?? 0);
 
-          if (overlap > 4) {
-            overlapCount++;
-            const currentRef = pendingRewritesRef.current.find(
-              (r) => r.id === rw.id
+          // If the suggestion overlaps the content that follows it, insert some
+          // extra spacer paragraphs after spacerTo so the document below is
+          // pushed down instead of being covered by the overlay.
+          //
+          // We allow multiple small nudges per rewrite so that as the rewritten
+          // text grows line‑by‑line, we keep adding just enough space rather
+          // than guessing all at once — but we (a) disable nudging entirely for
+          // very short rewrites and (b) cap the total so nothing can create an
+          // effectively infinite amount of blank space.
+          const currentExtra = spacerAdjustedRef.current[rw.id] ?? 0;
+          const MAX_EXTRA_PARAS = 8;
+          const isShortRewrite = approxRewriteLen < 120;
+
+          if (overlap > 0 && !isShortRewrite && currentExtra < MAX_EXTRA_PARAS) {
+            // Approximate how many extra paragraphs we need to fully clear the
+            // overlap. Each empty paragraph is roughly one line of height.
+            const pixelsPerPara = LINE_HEIGHT + 4;
+            const remaining = MAX_EXTRA_PARAS - currentExtra;
+            const extraParas = Math.max(
+              1,
+              Math.min(remaining, Math.ceil(overlap / pixelsPerPara))
             );
-            if (!currentRef) continue;
 
-            const extraNeeded = Math.ceil(overlap / LINE_HEIGHT) + 1;
-            // #region agent log
-            fetch('http://127.0.0.1:7243/ingest/12f206ba-113d-4c02-ba79-bc5d13cdf020',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'848b57'},body:JSON.stringify({sessionId:'848b57',hypothesisId:'B',location:'Editor.tsx:adjustSpacers',message:'Adjust spacers overlap',data:{rwId:rw.id,overlap,suggestionHeight:suggestionRect.height,contentAfterTop:contentAfter.top,extraNeeded},timestamp:Date.now()})}).catch(()=>{});
-            // #endregion
             editor
               .chain()
               .command(({ tr, state }) => {
-                let pos = currentRef.spacerTo;
-                for (let i = 0; i < extraNeeded; i++) {
+                let pos = rw.spacerTo;
+                for (let i = 0; i < extraParas; i++) {
                   const para = state.schema.nodes.paragraph.create();
                   tr.insert(pos, para);
                   pos += 2;
@@ -426,11 +539,9 @@ function Editor() {
                 return true;
               })
               .run();
-            if (overlapCount > 1) {
-              // #region agent log
-              fetch('http://127.0.0.1:7243/ingest/12f206ba-113d-4c02-ba79-bc5d13cdf020',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'848b57'},body:JSON.stringify({sessionId:'848b57',hypothesisId:'D',location:'Editor.tsx:adjustBreak',message:'Breaking after first fix',data:{overlapCount,rwId:rw.id},timestamp:Date.now()})}).catch(()=>{});
-              // #endregion
-            }
+
+            spacerAdjustedRef.current[rw.id] = currentExtra + extraParas;
+
             break;
           }
         } catch {
@@ -472,8 +583,10 @@ function Editor() {
         rw.isRevealing &&
         !(rw.id in revealTimersRef.current)
       ) {
-        // Pre-allocate spacers for the FULL text before starting reveal
-        // so content below is pushed down before words start appearing
+        // Pre-allocate spacers for the FULL text before starting reveal so
+        // content below is pushed down before words start appearing, but keep
+        // the baseline modest so short rewrites (e.g. synonyms) don't create a
+        // huge empty gap.
         if (editor) {
           const currentRef = pendingRewritesRef.current.find(
             (r) => r.id === rw.id
@@ -483,14 +596,13 @@ function Editor() {
             const avgCharWidth = 7; // approximate for 11pt Arial
             const charsPerLine = Math.floor(contentWidth / avgCharWidth);
             const textLines = Math.ceil(rw.rewriteText.length / charsPerLine);
-            const totalNeeded = textLines + 5; // text + buttons + padding
+            // Reserve more room for long rewrites so they don't overlap text
+            // below. Short phrases get ~2–3 spacer paragraphs, while long
+            // paragraphs can reserve up to ~10 lines of spacers.
+            const totalNeeded = Math.min(10, textLines + 2);
             const currentSpacers =
               (currentRef.spacerTo - currentRef.spacerFrom) / 2;
             const extraNeeded = Math.max(0, totalNeeded - currentSpacers);
-
-            // #region agent log
-            fetch('http://127.0.0.1:7243/ingest/12f206ba-113d-4c02-ba79-bc5d13cdf020',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'848b57'},body:JSON.stringify({sessionId:'848b57',hypothesisId:'A',location:'Editor.tsx:prealloc',message:'Pre-allocation',data:{rwId:rw.id,rewriteLen:rw.rewriteText.length,charsPerLine,textLines,totalNeeded,currentSpacers,extraNeeded},timestamp:Date.now()})}).catch(()=>{});
-            // #endregion
 
             if (extraNeeded > 0) {
               editor
@@ -628,25 +740,20 @@ function Editor() {
   // Handle overlay submit — close overlay, highlight text, insert spacers, start async API call
   const handleOverlaySubmit = useCallback(async () => {
     if (!prompt.trim() || !editor || !storedSelection) return;
-
-    const selectedText = editor.state.doc.textBetween(
-      storedSelection.from,
-      storedSelection.to,
-      " "
-    );
-
+    const doc = editor.state.doc;
     const currentPrompt = prompt;
     const sel = { ...storedSelection };
+
+    const selectedText = doc.textBetween(sel.from, sel.to, " ");
 
     // Close overlay immediately
     setIsOverlayOpen(false);
     setPrompt("");
     setStoredSelection(null);
 
-    // Find end of the paragraph containing the selection
-    const $to = editor.state.doc.resolve(sel.to);
-    const endOfBlock = $to.end($to.depth);
-    const spacerInsertPos = endOfBlock + 1;
+    // Insert spacers starting at a word boundary. If the selection ended in
+    // the middle of a word, this moves the *whole* word below the suggestion.
+    const spacerInsertPos = computeSpacerInsertPos(doc, sel.to);
 
     // Highlight text + insert spacer paragraphs in one transaction
     editor

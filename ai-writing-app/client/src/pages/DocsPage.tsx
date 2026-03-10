@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   listDocs,
   createDoc,
@@ -9,32 +9,49 @@ import {
   createFolder,
   deleteDoc,
   deleteFolder,
-  updateDocTitle,
 } from "../lib/docs";
-import { listContexts, createContext, updateContext, deleteContext, type ContextItem } from "../lib/contexts";
-import { listAgents, createAgent, updateAgent, deleteAgent, type AgentMeta } from "../lib/agents";
+import { listContexts, createContext, deleteContext, type ContextItem } from "../lib/contexts";
+import { listAgents, createAgent, deleteAgent, type AgentMeta } from "../lib/agents";
 
 export default function DocsPage() {
   const [docs, setDocs] = useState<DocMeta[]>([]);
+  const [docsLoading, setDocsLoading] = useState(true);
   const [folders, setFolders] = useState<FolderMeta[]>([]);
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
   const [contexts, setContexts] = useState<ContextItem[]>([]);
   const [contextSearch, setContextSearch] = useState("");
   const [agents, setAgents] = useState<AgentMeta[]>([]);
-  const [activeDrive, setActiveDrive] = useState<"documents" | "context" | "agents">("documents");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const driveParam = searchParams.get("drive");
+  const [activeDrive, _setActiveDrive] = useState<"documents" | "context" | "agents">(
+    driveParam === "context" || driveParam === "agents" ? driveParam : "documents"
+  );
+  const setActiveDrive = (drive: "documents" | "context" | "agents") => {
+    _setActiveDrive(drive);
+    setSearchParams(drive === "documents" ? {} : { drive }, { replace: true });
+  };
   const [isNewDocModalOpen, setIsNewDocModalOpen] = useState(false);
   const [newDocTitle, setNewDocTitle] = useState("Untitled document");
   const [isNewAgentModalOpen, setIsNewAgentModalOpen] = useState(false);
   const [newAgentName, setNewAgentName] = useState("New monkey");
   const [isNewContextModalOpen, setIsNewContextModalOpen] = useState(false);
   const [newContextTitle, setNewContextTitle] = useState("Untitled context");
+  const [isNewFolderModalOpen, setIsNewFolderModalOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("New folder");
   const navigate = useNavigate();
 
   useEffect(() => {
-    setDocs(listDocs());
+    listDocs()
+      .then(setDocs)
+      .catch(() => setDocs([]))
+      .finally(() => setDocsLoading(false));
     setFolders(listAllFolders());
-    setContexts(listContexts());
-    setAgents(listAgents());
+    listContexts()
+      .then(setContexts)
+      .catch(() => setContexts([]));
+    listAgents()
+      .then(setAgents)
+      .catch(() => setAgents([]));
   }, []);
 
   function handleNewDoc() {
@@ -42,40 +59,58 @@ export default function DocsPage() {
     setIsNewDocModalOpen(true);
   }
 
-  function handleConfirmNewDoc() {
-    const meta = createDoc();
-    const title = newDocTitle.trim();
-    if (title && title !== meta.title) {
-      updateDocTitle(meta.id, title);
+  async function handleConfirmNewDoc() {
+    try {
+      const title = newDocTitle.trim() || "Untitled document";
+      const meta = await createDoc({ title, folderId: activeFolderId });
+      setIsNewDocModalOpen(false);
+      listDocs().then(setDocs);
+      navigate(`/doc/${meta.id}`);
+    } catch (err) {
+      console.error("Failed to create document:", err);
     }
-    setDocs(listDocs());
-    setIsNewDocModalOpen(false);
-    navigate(`/doc/${meta.id}`);
   }
 
   function handleCancelNewDoc() {
     setIsNewDocModalOpen(false);
   }
 
-  function handleDeleteDoc(id: string) {
-    deleteDoc(id);
-    setDocs(listDocs());
+  async function handleDeleteDoc(id: string) {
+    try {
+      await deleteDoc(id);
+      listDocs().then(setDocs);
+    } catch (err) {
+      console.error("Failed to delete document:", err);
+    }
   }
 
-  function handleCreateFolder() {
-    const name = window.prompt("Folder name");
-    if (!name) return;
-    createFolder(activeFolderId, name.trim());
+  function handleNewFolder() {
+    setNewFolderName("New folder");
+    setIsNewFolderModalOpen(true);
+  }
+
+  function handleConfirmNewFolder() {
+    const name = newFolderName.trim() || "New folder";
+    createFolder(activeFolderId, name);
     setFolders(listAllFolders());
+    setIsNewFolderModalOpen(false);
   }
 
-  function handleDeleteFolder(id: string) {
+  function handleCancelNewFolder() {
+    setIsNewFolderModalOpen(false);
+  }
+
+  async function handleDeleteFolder(id: string) {
     if (!window.confirm("Delete this folder and all documents inside it?")) return;
-    deleteFolder(id);
-    setFolders(listAllFolders());
-    setDocs(listDocs());
-    if (activeFolderId === id) {
-      setActiveFolderId(null);
+    try {
+      await deleteFolder(id);
+      setFolders(listAllFolders());
+      listDocs().then(setDocs);
+      if (activeFolderId === id) {
+        setActiveFolderId(null);
+      }
+    } catch (err) {
+      console.error("Failed to delete folder:", err);
     }
   }
 
@@ -84,24 +119,30 @@ export default function DocsPage() {
     setIsNewContextModalOpen(true);
   }
 
-  function handleConfirmNewContext() {
-    const title = newContextTitle.trim() || "Untitled context";
-    const item = createContext();
-    if (title !== item.title) {
-      updateContext(item.id, { title });
+  async function handleConfirmNewContext() {
+    try {
+      const title = newContextTitle.trim() || "Untitled context";
+      const item = await createContext({ title });
+      setIsNewContextModalOpen(false);
+      listContexts().then(setContexts);
+      navigate(`/context/${item.id}`);
+    } catch (err) {
+      console.error("Failed to create context:", err);
     }
-    setContexts(listContexts());
-    setIsNewContextModalOpen(false);
   }
 
   function handleCancelNewContext() {
     setIsNewContextModalOpen(false);
   }
 
-  function handleContextDelete(id: string) {
+  async function handleContextDelete(id: string) {
     if (!window.confirm("Delete this context?")) return;
-    deleteContext(id);
-    setContexts(listContexts());
+    try {
+      await deleteContext(id);
+      listContexts().then(setContexts);
+    } catch (err) {
+      console.error("Failed to delete context:", err);
+    }
   }
 
   const filteredContexts = contexts.filter((ctx) => {
@@ -119,29 +160,37 @@ export default function DocsPage() {
     setIsNewAgentModalOpen(true);
   }
 
-  function handleConfirmNewAgent() {
-    const trimmed = newAgentName.trim() || "New monkey";
-    const agent = createAgent({ name: trimmed });
-    setAgents(listAgents());
-    setIsNewAgentModalOpen(false);
-    navigate(`/monkey-agent/${agent.id}`);
+  async function handleConfirmNewAgent() {
+    try {
+      const trimmed = newAgentName.trim() || "New monkey";
+      const agent = await createAgent({ name: trimmed });
+      setIsNewAgentModalOpen(false);
+      listAgents().then(setAgents);
+      navigate(`/monkey-agent/${agent.id}`);
+    } catch (err) {
+      console.error("Failed to create agent:", err);
+    }
   }
 
   function handleCancelNewAgent() {
     setIsNewAgentModalOpen(false);
   }
 
-  function handleAgentDelete(id: string) {
+  async function handleAgentDelete(id: string) {
     if (!window.confirm("Delete this monkey agent?")) return;
-    deleteAgent(id);
-    setAgents(listAgents());
+    try {
+      await deleteAgent(id);
+      listAgents().then(setAgents);
+    } catch (err) {
+      console.error("Failed to delete agent:", err);
+    }
   }
 
   function renderFolderTree(parentId: string | null, depth = 0): JSX.Element[] {
     return folders
       .filter((f) => f.parentId === parentId)
       .map((folder) => (
-        <div key={folder.id}>
+        <div key={folder.id} className="docs-folder-branch">
           <div
             className={
               activeFolderId === folder.id
@@ -151,7 +200,7 @@ export default function DocsPage() {
             style={{ paddingLeft: `${depth * 12}px` }}
             onClick={() => setActiveFolderId(folder.id)}
           >
-            <span className="docs-folder-icon">📁</span>
+            <img src="/images/folder.png" alt="" className="docs-folder-icon" />
             <span className="docs-folder-name">{folder.name}</span>
             <button
               type="button"
@@ -324,6 +373,40 @@ export default function DocsPage() {
             </div>
           </div>
         )}
+        {isNewFolderModalOpen && (
+          <div className="agent-modal-backdrop">
+            <div className="agent-modal">
+              <h2 className="agent-modal-title">New Folder</h2>
+              <label className="agent-modal-label" htmlFor="new-folder-name">
+                Folder name
+              </label>
+              <input
+                id="new-folder-name"
+                type="text"
+                className="agent-modal-input"
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+                autoFocus
+              />
+              <div className="agent-modal-actions">
+                <button
+                  type="button"
+                  className="agent-modal-btn agent-modal-btn-secondary"
+                  onClick={handleCancelNewFolder}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="agent-modal-btn agent-modal-btn-primary"
+                  onClick={handleConfirmNewFolder}
+                >
+                  Create
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         <aside className="docs-sidebar">
           {activeDrive === "documents" && (
             <>
@@ -338,9 +421,9 @@ export default function DocsPage() {
               <button
                 type="button"
                 className="docs-new-btn docs-new-folder-btn"
-                onClick={handleCreateFolder}
+                onClick={handleNewFolder}
               >
-                <span className="docs-new-icon">📁</span>
+                <img src="/images/folder.png" alt="" className="docs-new-icon docs-new-icon-img" />
                 New folder
               </button>
               <div className="docs-folder-tree">
@@ -352,7 +435,7 @@ export default function DocsPage() {
                   }
                   onClick={() => setActiveFolderId(null)}
                 >
-                  <span className="docs-folder-icon">🏛️</span>
+                  <img src="/images/root.png" alt="" className="docs-folder-icon" />
                   <span className="docs-folder-name">Root</span>
                 </div>
                 {renderFolderTree(null)}
@@ -393,7 +476,11 @@ export default function DocsPage() {
         <section className="docs-list-section">
           {activeDrive === "documents" && (
             <div className="docs-list">
-              {docs.filter((d) => (d.folderId ?? null) === activeFolderId).length === 0 ? (
+              {docsLoading ? (
+                <div className="docs-empty">
+                  <p>Loading documents…</p>
+                </div>
+              ) : docs.filter((d) => (d.folderId ?? null) === activeFolderId).length === 0 ? (
                 <div className="docs-empty">
                   <p>No documents yet in this folder.</p>
                   <button type="button" className="docs-new-btn-inline" onClick={handleNewDoc}>
@@ -484,11 +571,6 @@ export default function DocsPage() {
                           ))}
                         </div>
                       )}
-                      {ctx.description && (
-                        <p className="docs-context-description">
-                          {ctx.description}
-                        </p>
-                      )}
                     </article>
                   ))}
                 </div>
@@ -518,9 +600,7 @@ export default function DocsPage() {
                     >
                       <header className="docs-agent-header">
                         <div className="docs-agent-avatar">
-                          <span role="img" aria-label="Monkey">
-                            🐒
-                          </span>
+                          <img src="/images/monkey%20(1).png" alt="Monkey" className="docs-agent-avatar-img" />
                         </div>
                         <div className="docs-agent-meta">
                           <h3 className="docs-agent-name">{agent.name}</h3>
@@ -538,16 +618,6 @@ export default function DocsPage() {
                           ✕
                         </button>
                       </header>
-                      {agent.strengths && (
-                        <p className="docs-agent-strengths">
-                          <strong>Strengths:</strong> {agent.strengths}
-                        </p>
-                      )}
-                      {agent.defaultPrompt && (
-                        <p className="docs-agent-prompt">
-                          <strong>Default prompt:</strong> {agent.defaultPrompt}
-                        </p>
-                      )}
                     </article>
                   ))}
                 </div>

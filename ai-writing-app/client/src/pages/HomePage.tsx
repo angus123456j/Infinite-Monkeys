@@ -133,7 +133,7 @@ export default function HomePage() {
             Select text, summon the monkeys, and watch ideas take new shape.
           </p>
           <Link to="/docs" className="home-cta">
-            Try it
+            Enter the drive
           </Link>
         </div>
       </div>

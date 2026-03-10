@@ -1,127 +1,130 @@
+import { apiFetch } from "./api";
+
 export interface AgentMeta {
   id: string;
   name: string;
   role: string;
   strengths: string;
   avatar?: string;
-  /** Combined prompt built from identity, behavior, and constraints. */
   defaultPrompt: string;
-  /** Who this monkey is, voice, background, etc. */
   identity: string;
-  /** How this monkey should behave and respond. */
   behavior: string;
-  /** Guardrails and things this monkey must avoid. */
   constraints: string;
   createdAt: number;
   updatedAt: number;
 }
 
-const AGENTS_STORAGE_KEY = "infinite-monkeys-agents";
+interface ApiAgent {
+  id: string;
+  name: string;
+  role: string;
+  strengths: string;
+  avatar?: string | null;
+  defaultPrompt: string;
+  identity: string;
+  behavior: string;
+  constraints: string;
+  createdAt: string;
+  updatedAt: string;
+}
 
-function loadAgents(): AgentMeta[] {
+function mapFromApi(a: ApiAgent): AgentMeta {
+  return {
+    id: a.id,
+    name: a.name,
+    role: a.role,
+    strengths: a.strengths ?? "",
+    avatar: a.avatar ?? undefined,
+    defaultPrompt: a.defaultPrompt ?? "",
+    identity: a.identity ?? "",
+    behavior: a.behavior ?? "",
+    constraints: a.constraints ?? "",
+    createdAt: new Date(a.createdAt).getTime(),
+    updatedAt: new Date(a.updatedAt).getTime(),
+  };
+}
+
+function buildDefaultPrompt(identity: string, behavior: string, constraints: string): string {
+  const sections: string[] = [];
+  if (identity.trim()) sections.push(`Identity:\n${identity.trim()}`);
+  if (behavior.trim()) sections.push(`Behavior:\n${behavior.trim()}`);
+  if (constraints.trim()) sections.push(`Constraints:\n${constraints.trim()}`);
+  return sections.join("\n\n");
+}
+
+export async function listAgents(): Promise<AgentMeta[]> {
+  const list = await apiFetch<ApiAgent[]>("/api/agents");
+  return list.map(mapFromApi).sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+export async function getAgent(id: string): Promise<AgentMeta | null> {
   try {
-    const raw = localStorage.getItem(AGENTS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as AgentMeta[];
-    return parsed.map((a) => ({
-      ...a,
-      // Backwards compatibility for older agents without structured fields
-      identity: a.identity ?? "",
-      behavior: a.behavior ?? "",
-      constraints: a.constraints ?? "",
-      updatedAt: a.updatedAt ?? a.createdAt ?? Date.now(),
-    }));
+    const a = await apiFetch<ApiAgent>(`/api/agents/${id}`);
+    return mapFromApi(a);
   } catch {
-    return [];
+    return null;
   }
 }
 
-function saveAgents(items: AgentMeta[]) {
-  localStorage.setItem(AGENTS_STORAGE_KEY, JSON.stringify(items));
-}
-
-export function listAgents(): AgentMeta[] {
-  return loadAgents().sort((a, b) => b.updatedAt - a.updatedAt);
-}
-
-export function getAgent(id: string): AgentMeta | undefined {
-  return loadAgents().find((a) => a.id === id);
-}
-
-export function createAgent(partial?: {
+export async function createAgent(partial?: {
   name?: string;
   role?: string;
   strengths?: string;
   defaultPrompt?: string;
   avatar?: string;
-}): AgentMeta {
-  const agents = loadAgents();
-  const now = Date.now();
-  const id = `agent-${now}-${Math.random().toString(36).slice(2, 9)}`;
-  const identity = "";
-  const behavior = "";
-  const constraints = "";
-  const agent: AgentMeta = {
-    id,
-    name: partial?.name?.trim() || "New monkey",
-    role: partial?.role ?? "Generalist",
-    strengths: partial?.strengths ?? "",
-    avatar: partial?.avatar,
-    defaultPrompt:
-      partial?.defaultPrompt ??
-      buildDefaultPrompt(identity, behavior, constraints),
-    identity,
-    behavior,
-    constraints,
-    createdAt: now,
-    updatedAt: now,
-  };
-  agents.unshift(agent);
-  saveAgents(agents);
-  return agent;
+}): Promise<AgentMeta> {
+  const a = await apiFetch<ApiAgent>("/api/agents", {
+    method: "POST",
+    body: JSON.stringify({
+      name: partial?.name?.trim() || "New monkey",
+      role: partial?.role ?? "Generalist",
+      strengths: partial?.strengths ?? "",
+      avatar: partial?.avatar ?? null,
+      defaultPrompt: partial?.defaultPrompt ?? "",
+      identity: "",
+      behavior: "",
+      constraints: "",
+    }),
+  });
+  return mapFromApi(a);
 }
 
-export function updateAgent(id: string, updates: Partial<Omit<AgentMeta, "id" | "createdAt">>) {
-  const agents = loadAgents();
-  const agent = agents.find((a) => a.id === id);
-  if (!agent) return;
-  if (updates.name !== undefined) agent.name = updates.name;
-  if (updates.role !== undefined) agent.role = updates.role;
-  if (updates.strengths !== undefined) agent.strengths = updates.strengths;
-  if (updates.identity !== undefined) agent.identity = updates.identity;
-  if (updates.behavior !== undefined) agent.behavior = updates.behavior;
-  if (updates.constraints !== undefined) agent.constraints = updates.constraints;
+export async function updateAgent(
+  id: string,
+  updates: Partial<Omit<AgentMeta, "id" | "createdAt">>
+): Promise<void> {
+  const body: Record<string, unknown> = {};
+  if (updates.name !== undefined) body.name = updates.name;
+  if (updates.role !== undefined) body.role = updates.role;
+  if (updates.strengths !== undefined) body.strengths = updates.strengths;
+  if (updates.avatar !== undefined) body.avatar = updates.avatar;
+  if (updates.identity !== undefined) body.identity = updates.identity;
+  if (updates.behavior !== undefined) body.behavior = updates.behavior;
+  if (updates.constraints !== undefined) body.constraints = updates.constraints;
   if (updates.defaultPrompt !== undefined) {
-    agent.defaultPrompt = updates.defaultPrompt;
-  } else {
-    // Keep defaultPrompt in sync when structured fields change.
-    agent.defaultPrompt = buildDefaultPrompt(
-      agent.identity,
-      agent.behavior,
-      agent.constraints
-    );
+    body.defaultPrompt = updates.defaultPrompt;
+  } else if (
+    updates.identity !== undefined ||
+    updates.behavior !== undefined ||
+    updates.constraints !== undefined
+  ) {
+    // Rebuild defaultPrompt from the fields we know about.
+    // We need the current values for fields not in `updates`, so fetch first.
+    const current = await getAgent(id);
+    if (current) {
+      body.defaultPrompt = buildDefaultPrompt(
+        updates.identity ?? current.identity,
+        updates.behavior ?? current.behavior,
+        updates.constraints ?? current.constraints
+      );
+    }
   }
-  if (updates.avatar !== undefined) agent.avatar = updates.avatar;
-  agent.updatedAt = Date.now();
-  saveAgents(agents);
+  await apiFetch(`/api/agents/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
 }
 
-function buildDefaultPrompt(identity: string, behavior: string, constraints: string): string {
-  const sections: string[] = [];
-  if (identity.trim()) {
-    sections.push(`Identity:\n${identity.trim()}`);
-  }
-  if (behavior.trim()) {
-    sections.push(`Behavior:\n${behavior.trim()}`);
-  }
-  if (constraints.trim()) {
-    sections.push(`Constraints:\n${constraints.trim()}`);
-  }
-  return sections.join("\n\n");
+export async function deleteAgent(id: string): Promise<void> {
+  await apiFetch(`/api/agents/${id}`, { method: "DELETE" });
 }
-
-export function deleteAgent(id: string) {
-  const agents = loadAgents().filter((a) => a.id !== id);
-  saveAgents(agents);
-}
-

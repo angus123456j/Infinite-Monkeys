@@ -1,3 +1,5 @@
+import { apiFetch } from "./api";
+
 export interface DocMeta {
   id: string;
   title: string;
@@ -15,28 +17,28 @@ export interface FolderMeta {
   updatedAt: number;
 }
 
-const DOCS_STORAGE_KEY = "infinite-monkeys-docs";
+/** Full document from API (meta + content). */
+export interface DocumentWithContent extends DocMeta {
+  content: string;
+}
+
+function mapDocFromApi(d: {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  folderId?: string | null;
+}): DocMeta {
+  return {
+    id: d.id,
+    title: d.title,
+    createdAt: new Date(d.createdAt).getTime(),
+    updatedAt: new Date(d.updatedAt).getTime(),
+    folderId: d.folderId ?? null,
+  };
+}
+
 const FOLDERS_STORAGE_KEY = "infinite-monkeys-folders";
-
-function loadDocs(): DocMeta[] {
-  try {
-    const raw = localStorage.getItem(DOCS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as DocMeta[];
-    // Backwards compatibility for older docs without updatedAt/folderId
-    return parsed.map((d) => ({
-      ...d,
-      updatedAt: d.updatedAt ?? d.createdAt ?? Date.now(),
-      folderId: d.folderId ?? null,
-    }));
-  } catch {
-    return [];
-  }
-}
-
-function saveDocs(docs: DocMeta[]) {
-  localStorage.setItem(DOCS_STORAGE_KEY, JSON.stringify(docs));
-}
 
 function loadFolders(): FolderMeta[] {
   try {
@@ -57,60 +59,102 @@ function saveFolders(folders: FolderMeta[]) {
   localStorage.setItem(FOLDERS_STORAGE_KEY, JSON.stringify(folders));
 }
 
-export function listDocs(): DocMeta[] {
-  return loadDocs().sort((a, b) => b.createdAt - a.createdAt);
+// ——— Documents (API) ———
+
+export async function listDocs(): Promise<DocMeta[]> {
+  const list = (await apiFetch<Array<{ id: string; title: string; createdAt: string; updatedAt: string; folderId?: string | null }>>(
+    "/api/documents"
+  )) as Array<{ id: string; title: string; createdAt: string; updatedAt: string; folderId?: string | null }>;
+  return list.map(mapDocFromApi).sort((a, b) => b.createdAt - a.createdAt);
 }
 
-export function createDoc(): DocMeta {
-  const docs = loadDocs();
-  const id = `doc-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-  const now = Date.now();
-  const meta: DocMeta = {
-    id,
-    title: "Untitled document",
-    createdAt: now,
-    updatedAt: now,
-    folderId: null,
-  };
-  docs.unshift(meta);
-  saveDocs(docs);
-  return meta;
+export async function createDoc(options?: {
+  title?: string;
+  folderId?: string | null;
+}): Promise<DocMeta> {
+  const title = options?.title?.trim() || "Untitled document";
+  const folderId = options?.folderId ?? null;
+  const d = await apiFetch<{ id: string; title: string; createdAt: string; updatedAt: string; folderId?: string | null }>(
+    "/api/documents",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        title,
+        content: "<p></p>",
+        folderId,
+      }),
+    }
+  );
+  return mapDocFromApi(d);
 }
 
-export function getDoc(id: string): DocMeta | undefined {
-  return loadDocs().find((d) => d.id === id);
+export async function getDoc(id: string): Promise<DocMeta | null> {
+  try {
+    const d = await apiFetch<{ id: string; title: string; createdAt: string; updatedAt: string; folderId?: string | null }>(
+      `/api/documents/${id}`
+    );
+    return mapDocFromApi(d);
+  } catch {
+    return null;
+  }
 }
 
-export function deleteDoc(id: string) {
-  const docs = loadDocs().filter((d) => d.id !== id);
-  saveDocs(docs);
+/** Fetch full document including content (for editor). */
+export async function getDocument(id: string): Promise<DocumentWithContent | null> {
+  try {
+    const d = await apiFetch<{
+      id: string;
+      title: string;
+      content: string;
+      createdAt: string;
+      updatedAt: string;
+      folderId?: string | null;
+    }>(`/api/documents/${id}`);
+    return {
+      ...mapDocFromApi(d),
+      content: d.content ?? "<p></p>",
+    };
+  } catch {
+    return null;
+  }
 }
 
-export function updateDocTitle(id: string, title: string) {
-  const docs = loadDocs();
-  const meta = docs.find((d) => d.id === id);
-  if (!meta) return;
-  meta.title = title;
-  meta.updatedAt = Date.now();
-  saveDocs(docs);
+export async function deleteDoc(id: string): Promise<void> {
+  await apiFetch(`/api/documents/${id}`, { method: "DELETE" });
+}
+
+export async function updateDocTitle(id: string, title: string): Promise<void> {
+  await apiFetch(`/api/documents/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ title }),
+  });
+}
+
+export async function saveDoc(
+  id: string,
+  updates: { title?: string; content?: string; folderId?: string | null }
+): Promise<void> {
+  await apiFetch(`/api/documents/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(updates),
+  });
 }
 
 /** List documents in the given folder (root when folderId is null). */
-export function listDocsInFolder(folderId: string | null): DocMeta[] {
-  return loadDocs()
+export function listDocsInFolder(docs: DocMeta[], folderId: string | null): DocMeta[] {
+  return docs
     .filter((d) => (d.folderId ?? null) === folderId)
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-/** Move a document into a different folder (null for root). */
-export function moveDoc(id: string, targetFolderId: string | null) {
-  const docs = loadDocs();
-  const meta = docs.find((d) => d.id === id);
-  if (!meta) return;
-  meta.folderId = targetFolderId;
-  meta.updatedAt = Date.now();
-  saveDocs(docs);
+export async function moveDoc(id: string, targetFolderId: string | null): Promise<void> {
+  await apiFetch(`/api/documents/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ folderId: targetFolderId }),
+  });
 }
+
+// ——— Folders (localStorage for now) ———
 
 /** List folders directly under the given parent (root when parentId is null). */
 export function listFolders(parentId: string | null): FolderMeta[] {
@@ -148,13 +192,12 @@ export function moveFolder(id: string, parentId: string | null) {
   saveFolders(folders);
 }
 
-/** Delete a folder and all of its descendant folders and documents. */
-export function deleteFolder(id: string) {
+/** Delete a folder and all of its descendant folders and documents (in DB we only unlink docs in this folder; folders are local). */
+export async function deleteFolder(id: string) {
   const folders = loadFolders();
-  const docs = loadDocs();
+  const docs = await listDocs();
 
   const toDelete = new Set<string>();
-
   function collect(folderId: string) {
     if (toDelete.has(folderId)) return;
     toDelete.add(folderId);
@@ -162,16 +205,17 @@ export function deleteFolder(id: string) {
       .filter((f) => f.parentId === folderId)
       .forEach((child) => collect(child.id));
   }
-
   collect(id);
 
   const remainingFolders = folders.filter((f) => !toDelete.has(f.id));
-  const remainingDocs = docs.filter(
-    (d) => !d.folderId || !toDelete.has(d.folderId)
-  );
-
   saveFolders(remainingFolders);
-  saveDocs(remainingDocs);
+
+  // Move documents in deleted folders to root (or delete them — we move to root)
+  for (const doc of docs) {
+    if (doc.folderId && toDelete.has(doc.folderId)) {
+      await moveDoc(doc.id, null);
+    }
+  }
 }
 
 /** List all folders (unsorted by parent). */

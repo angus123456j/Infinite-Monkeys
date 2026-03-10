@@ -1,6 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { getAgent, updateAgent, type AgentMeta } from "../lib/agents";
+
+const SAVE_DEBOUNCE_MS = 1500;
+const PERIODIC_SAVE_MS = 30_000;
 
 interface RouteParams {
   id: string;
@@ -11,41 +14,101 @@ export default function MonkeyAgentEditorPage() {
   const navigate = useNavigate();
 
   const [agent, setAgent] = useState<AgentMeta | null>(null);
+  const [loading, setLoading] = useState(true);
   const [identity, setIdentity] = useState("");
   const [behavior, setBehavior] = useState("");
   const [constraints, setConstraints] = useState("");
-  const [isSaving, setIsSaving] = useState(false);
-  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
+
+  const dirtyRef = useRef(false);
+  const latestRef = useRef({ identity: "", behavior: "", constraints: "" });
 
   useEffect(() => {
-    if (!id) return;
-    const existing = getAgent(id);
-    if (!existing) {
-      // If we somehow cannot find the agent, send the user back to the Drive.
-      navigate("/docs", { replace: true });
-      return;
-    }
-    setAgent(existing);
-    setIdentity(existing.identity ?? "");
-    setBehavior(existing.behavior ?? "");
-    setConstraints(existing.constraints ?? "");
+    if (!id) { setLoading(false); return; }
+    getAgent(id)
+      .then((existing) => {
+        if (!existing) {
+          navigate("/docs?drive=agents", { replace: true });
+          return;
+        }
+        setAgent(existing);
+        setIdentity(existing.identity ?? "");
+        setBehavior(existing.behavior ?? "");
+        setConstraints(existing.constraints ?? "");
+        latestRef.current = {
+          identity: existing.identity ?? "",
+          behavior: existing.behavior ?? "",
+          constraints: existing.constraints ?? "",
+        };
+        setLoading(false);
+      })
+      .catch(() => {
+        navigate("/docs?drive=agents", { replace: true });
+      });
   }, [id, navigate]);
 
-  if (!id) {
-    return null;
-  }
+  const flush = useCallback(() => {
+    if (!dirtyRef.current || !id) return;
+    dirtyRef.current = false;
+    const { identity: i, behavior: b, constraints: c } = latestRef.current;
+    void updateAgent(id, { identity: i, behavior: b, constraints: c });
+    setSaveStatus("saved");
+  }, [id]);
 
-  const handleSave = () => {
-    if (!agent) return;
-    setIsSaving(true);
-    updateAgent(agent.id, {
-      identity,
-      behavior,
-      constraints,
-    });
-    setIsSaving(false);
-    setLastSavedAt(Date.now());
-  };
+  // Debounced + periodic + visibility/beforeunload auto-save
+  useEffect(() => {
+    if (!id) return;
+    let debounceTimer: number | undefined;
+    let periodicTimer: number | undefined;
+
+    const scheduleSave = () => {
+      if (debounceTimer != null) clearTimeout(debounceTimer);
+      debounceTimer = window.setTimeout(flush, SAVE_DEBOUNCE_MS);
+    };
+
+    const onVisChange = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    const onUnload = () => flush();
+
+    document.addEventListener("visibilitychange", onVisChange);
+    window.addEventListener("beforeunload", onUnload);
+    periodicTimer = window.setInterval(flush, PERIODIC_SAVE_MS);
+
+    // Expose scheduleSave so field handlers can trigger it
+    scheduleRef.current = scheduleSave;
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisChange);
+      window.removeEventListener("beforeunload", onUnload);
+      if (debounceTimer != null) clearTimeout(debounceTimer);
+      if (periodicTimer != null) clearInterval(periodicTimer);
+      flush();
+    };
+  }, [id, flush]);
+
+  const scheduleRef = useRef<(() => void) | null>(null);
+
+  const handleFieldChange = useCallback(
+    (field: "identity" | "behavior" | "constraints", value: string) => {
+      latestRef.current[field] = value;
+      dirtyRef.current = true;
+      setSaveStatus("idle");
+      if (field === "identity") setIdentity(value);
+      else if (field === "behavior") setBehavior(value);
+      else setConstraints(value);
+      scheduleRef.current?.();
+    },
+    []
+  );
+
+  if (!id || loading) {
+    return (
+      <div className="agent-editor-page">
+        <div style={{ padding: "2rem", textAlign: "center" }}>Loading agent…</div>
+      </div>
+    );
+  }
 
   return (
     <div className="agent-editor-page">
@@ -54,7 +117,7 @@ export default function MonkeyAgentEditorPage() {
           <button
             type="button"
             className="agent-editor-back"
-            onClick={() => navigate("/docs")}
+            onClick={() => navigate("/docs?drive=agents")}
           >
             ← Back to Monkey Agents
           </button>
@@ -63,19 +126,11 @@ export default function MonkeyAgentEditorPage() {
           </h1>
         </div>
         <div className="agent-editor-actions">
-          {lastSavedAt && (
+          {saveStatus === "saved" && (
             <span className="agent-editor-saved">
               Saved
             </span>
           )}
-          <button
-            type="button"
-            className="agent-editor-save-btn"
-            onClick={handleSave}
-            disabled={isSaving}
-          >
-            {isSaving ? "Saving…" : "Save"}
-          </button>
         </div>
       </header>
 
@@ -93,7 +148,7 @@ export default function MonkeyAgentEditorPage() {
               className="agent-section-textarea"
               placeholder={"e.g.\n- A meticulous research librarian monkey.\n- Speaks in concise, calm sentences."}
               value={identity}
-              onChange={(e) => setIdentity(e.target.value)}
+              onChange={(e) => handleFieldChange("identity", e.target.value)}
             />
           </section>
 
@@ -106,7 +161,7 @@ export default function MonkeyAgentEditorPage() {
               className="agent-section-textarea"
               placeholder={"e.g.\n- Always proposes 3 options with pros and cons.\n- Asks clarifying questions before giving long answers."}
               value={behavior}
-              onChange={(e) => setBehavior(e.target.value)}
+              onChange={(e) => handleFieldChange("behavior", e.target.value)}
             />
           </section>
 
@@ -119,7 +174,7 @@ export default function MonkeyAgentEditorPage() {
               className="agent-section-textarea"
               placeholder={"e.g.\n- Never invent citations.\n- Keep responses under 400 words unless asked."}
               value={constraints}
-              onChange={(e) => setConstraints(e.target.value)}
+              onChange={(e) => handleFieldChange("constraints", e.target.value)}
             />
           </section>
         </div>

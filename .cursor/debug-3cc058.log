@@ -1,0 +1,2 @@
+{"sessionId":"3cc058","runId":"db-init","hypothesisId":"H3","location":"server/src/db.ts","message":"PrismaMariaDb connection string","data":{"databaseUrl":"mariadb://root@localhost:3306/infinite_monkeys"},"timestamp":1773176973631}
+{"sessionId":"3cc058","runId":"create-document","hypothesisId":"H1","location":"server/src/index.ts:/api/documents","message":"Create document request received","data":{"titleType":"string","hasTitle":true,"contentType":"string","hasContent":true,"folderId":null},"timestamp":1773176979788}
