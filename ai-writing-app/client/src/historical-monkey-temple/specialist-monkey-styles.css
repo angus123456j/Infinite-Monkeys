@@ -1,0 +1,262 @@
+/* Styles for the Specialist Monkey / Monkey Temple page (archived).
+ * Used when this folder is restored or run in isolation. */
+
+.specialist-monkey-page {
+  min-height: 100vh;
+  width: 100%;
+  background: #0f0e0c;
+  position: relative;
+}
+
+.specialist-monkey-header {
+  position: absolute;
+  top: 1.5rem;
+  left: 1.5rem;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.specialist-monkey-title {
+  font-family: Cinzel, "Times New Roman", serif;
+  font-weight: 600;
+  font-size: 1.5rem;
+  color: rgba(232, 224, 213, 0.95);
+  letter-spacing: 0.04em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.specialist-monkey-subtitle {
+  font-size: 0.8rem;
+  color: rgba(192, 184, 168, 0.7);
+  margin-top: 0.25rem;
+}
+
+.specialist-monkey-scene-wrapper {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.specialist-monkey-scene {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.specialist-monkey-ring-position {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 11;
+  padding: 0.6rem 0.9rem;
+  background: rgba(15, 14, 12, 0.95);
+  color: #e8e0d0;
+  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", monospace;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  border: 1px solid rgba(212, 196, 160, 0.35);
+  border-radius: 6px;
+  pointer-events: auto;
+}
+
+.specialist-monkey-ring-title {
+  font-weight: 700;
+  color: #f0e8d8;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.35rem;
+}
+
+.specialist-monkey-ring-inputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.8rem;
+  margin-bottom: 0.4rem;
+}
+
+.specialist-monkey-ring-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  color: #c8e0ff;
+}
+
+.specialist-monkey-ring-input {
+  width: 4.2rem;
+  padding: 0.2rem 0.35rem;
+  font-size: 0.78rem;
+  font-family: inherit;
+  background: rgba(20, 22, 24, 0.9);
+  border: 1px solid rgba(180, 170, 150, 0.35);
+  border-radius: 4px;
+  color: #e8e0d0;
+  font-variant-numeric: tabular-nums;
+}
+
+.specialist-monkey-ring-input:focus {
+  outline: none;
+  border-color: rgba(200, 190, 160, 0.6);
+}
+
+.specialist-monkey-ring-input::-webkit-outer-spin-button,
+.specialist-monkey-ring-input::-webkit-inner-spin-button {
+  opacity: 0.5;
+}
+
+.specialist-monkey-ring-values {
+  font-variant-numeric: tabular-nums;
+  color: #c8e0ff;
+}
+
+.specialist-monkey-ring-swivel {
+  margin-top: 0.2rem;
+  font-size: 0.78rem;
+  color: #b8d0e8;
+}
+
+.specialist-monkey-coords,
+.specialist-monkey-controls {
+  position: absolute;
+  top: 6.5rem;
+  right: 1rem;
+  z-index: 10;
+  padding: 0.75rem 1rem;
+  background: rgba(15, 14, 12, 0.9);
+  color: #c8bca8;
+  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  border: 1px solid rgba(212, 196, 160, 0.25);
+  border-radius: 6px;
+  user-select: all;
+}
+
+.specialist-monkey-coords {
+  pointer-events: none;
+}
+
+.specialist-monkey-controls {
+  pointer-events: auto;
+}
+
+.specialist-monkey-controls-section {
+  margin-bottom: 0.5rem;
+}
+
+.specialist-monkey-controls-section:last-of-type {
+  margin-bottom: 0;
+}
+
+.specialist-monkey-slider-label {
+  display: block;
+  margin-bottom: 0.3rem;
+  font-weight: 500;
+  color: #d4c4a0;
+}
+
+.specialist-monkey-angle-slider {
+  width: 100%;
+  min-width: 120px;
+  accent-color: #d4c4a0;
+}
+
+.specialist-monkey-coords-title {
+  font-weight: 600;
+  color: #d4c4a0;
+  margin-bottom: 0.35rem;
+}
+
+.specialist-monkey-positions-list {
+  max-height: 180px;
+  overflow-y: auto;
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.specialist-monkey-position-item {
+  margin-bottom: 0.2rem;
+  color: #b8b0a0;
+}
+
+.specialist-monkey-copy-btn {
+  margin-top: 0.5rem;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.75rem;
+  background: rgba(180, 170, 150, 0.25);
+  border: 1px solid rgba(180, 170, 150, 0.4);
+  color: #c8c0b0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.specialist-monkey-copy-btn:hover {
+  background: rgba(180, 170, 150, 0.35);
+}
+
+.specialist-monkey-coords-code {
+  font-size: 0.75rem;
+  color: #a0b8c8;
+  margin-top: 0.25rem;
+}
+
+.specialist-monkey-overlay-controls {
+  top: 1rem;
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+}
+
+.specialist-monkey-overlay-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+  margin-bottom: 0.35rem;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid rgba(180, 170, 150, 0.15);
+}
+
+.specialist-monkey-overlay-row:last-of-type {
+  border-bottom: none;
+}
+
+.specialist-monkey-overlay-label {
+  font-weight: 600;
+  color: #c8b8a0;
+  min-width: 1.8rem;
+}
+
+.specialist-monkey-overlay-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.72rem;
+  color: #b8b0a0;
+}
+
+.specialist-monkey-overlay-input {
+  width: 3.5rem;
+  padding: 0.15rem 0.25rem;
+  font-size: 0.72rem;
+  font-family: inherit;
+  background: rgba(20, 22, 24, 0.9);
+  border: 1px solid rgba(180, 170, 150, 0.3);
+  border-radius: 3px;
+  color: #e0d8c8;
+  font-variant-numeric: tabular-nums;
+}
+
+.specialist-monkey-overlay-input:focus {
+  outline: none;
+  border-color: rgba(200, 190, 160, 0.5);
+}
+
+.specialist-monkey-coords-hint {
+  margin-top: 0.5rem;
+  font-size: 0.7rem;
+  opacity: 0.85;
+  color: #a09888;
+}

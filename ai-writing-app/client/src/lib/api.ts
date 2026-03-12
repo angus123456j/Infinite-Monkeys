@@ -1,6 +1,7 @@
-/** Base URL for the backend API. */
+/** Base URL for the backend API. Server defaults to port 3001; set VITE_API_URL only if you run it elsewhere. */
+const raw = (import.meta.env.VITE_API_URL as string) ?? "";
 export const API_BASE =
-  (import.meta.env.VITE_API_URL as string) || "http://localhost:3001";
+  raw.trim() ? raw.replace(/\/$/, "") : "http://localhost:3001";
 
 export async function apiFetch<T>(
   path: string,

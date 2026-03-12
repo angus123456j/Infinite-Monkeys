@@ -245,7 +245,7 @@ export default function Scene3D() {
         const meta = createDoc();
         navigate(`/doc/${meta.id}`);
       } else if (mapHit) {
-        navigate("/specialist-monkey");
+        navigate("/monkey-agents-network");
       }
       // book stack click does nothing for now
     };
@@ -419,7 +419,7 @@ export default function Scene3D() {
             <button
               type="button"
               className="scene3d-mappen-btn"
-              onClick={() => navigate("/specialist-monkey")}
+              onClick={() => navigate("/monkey-agents-network")}
             >
               Create your specialist monkey
             </button>

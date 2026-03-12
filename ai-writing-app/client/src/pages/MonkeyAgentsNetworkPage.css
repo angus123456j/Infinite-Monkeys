@@ -1,0 +1,105 @@
+.monkey-agents-network-page {
+  min-height: 100vh;
+  width: 100%;
+  background: #f8f6f1;
+  position: relative;
+}
+
+.monkey-agents-network-header {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.monkey-agents-network-title {
+  font-family: "Cinzel", "Times New Roman", serif;
+  font-weight: 600;
+  font-size: 1.4rem;
+  color: #1b3a5c;
+  letter-spacing: 0.04em;
+  margin: 0;
+}
+
+.monkey-agents-network-subtitle {
+  font-size: 0.8rem;
+  color: #8b7235;
+  margin-top: 0.25rem;
+}
+
+.network-reset-btn {
+  margin-top: 0.6rem;
+  padding: 0.4rem 0.85rem;
+  font-family: "Cinzel", "Times New Roman", serif;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #1b3a5c;
+  background: rgba(248, 246, 241, 0.75);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(201, 168, 76, 0.4);
+  border-radius: 8px;
+  cursor: pointer;
+  pointer-events: auto;
+  letter-spacing: 0.04em;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.network-reset-btn:hover {
+  background: rgba(248, 246, 241, 0.95);
+  border-color: rgba(201, 168, 76, 0.7);
+}
+
+.neural-network-scene {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+}
+
+/* Right-side translucent overlay panel */
+.network-overlay-panel {
+  position: fixed;
+  top: 50%;
+  right: 2rem;
+  transform: translateY(-50%);
+  z-index: 20;
+  width: 340px;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: 1.5rem 1.75rem;
+  background: rgba(248, 246, 241, 0.82);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid rgba(201, 168, 76, 0.35);
+  border-radius: 14px;
+  box-shadow: 0 8px 40px rgba(27, 58, 92, 0.12);
+  pointer-events: none;
+}
+
+.network-overlay-panel-title {
+  font-family: "Cinzel", "Times New Roman", serif;
+  font-weight: 600;
+  font-size: 1.25rem;
+  color: #1b3a5c;
+  margin: 0 0 0.75rem 0;
+  letter-spacing: 0.03em;
+}
+
+.network-overlay-panel-divider {
+  width: 3rem;
+  height: 2px;
+  background: linear-gradient(90deg, #c9a84c, rgba(201, 168, 76, 0.2));
+  margin-bottom: 1rem;
+  border-radius: 1px;
+}
+
+.network-overlay-panel-text {
+  font-size: 0.85rem;
+  line-height: 1.65;
+  color: #3a3a3a;
+  margin: 0;
+  white-space: pre-wrap;
+}

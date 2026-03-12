@@ -1,4 +1,5 @@
-import SpecialistMonkeyScene from "../components/SpecialistMonkeyScene";
+import SpecialistMonkeyScene from "./SpecialistMonkeyScene";
+import "./specialist-monkey-styles.css";
 
 export default function SpecialistMonkeyPage() {
   return (
