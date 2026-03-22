@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { listAgents, type AgentMeta } from "../lib/agents";
+import { listContexts, type ContextItem } from "../lib/contexts";
 
 interface OverlayProps {
   isOpen: boolean;
@@ -6,6 +8,10 @@ interface OverlayProps {
   onSubmit: () => void;
   prompt: string;
   onPromptChange: (prompt: string) => void;
+  selectedAgentId: string | null;
+  onAgentChange: (agentId: string | null) => void;
+  selectedContextIds: string[];
+  onContextChange: (contextIds: string[]) => void;
 }
 
 function Overlay({
@@ -14,19 +20,46 @@ function Overlay({
   onSubmit,
   prompt,
   onPromptChange,
+  selectedAgentId,
+  onAgentChange,
+  selectedContextIds,
+  onContextChange,
 }: OverlayProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+
+  const [agents, setAgents] = useState<AgentMeta[]>([]);
+  const [agentsLoaded, setAgentsLoaded] = useState(false);
+  const [contexts, setContexts] = useState<ContextItem[]>([]);
+  const [contextsLoaded, setContextsLoaded] = useState(false);
+
+  const [contextError, setContextError] = useState<string | null>(null);
 
   // Drag state
   const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
   const isDragging = useRef(false);
   const dragOffset = useRef({ x: 0, y: 0 });
 
+  // Fetch agents once when overlay first opens
+  useEffect(() => {
+    if (isOpen && !agentsLoaded) {
+      listAgents()
+        .then(setAgents)
+        .catch(() => setAgents([]))
+        .finally(() => setAgentsLoaded(true));
+    }
+    if (isOpen && !contextsLoaded) {
+      listContexts()
+        .then(setContexts)
+        .catch(() => setContexts([]))
+        .finally(() => setContextsLoaded(true));
+    }
+  }, [isOpen, agentsLoaded, contextsLoaded]);
+
   // Reset position to center when overlay opens
   useEffect(() => {
     if (isOpen) {
-      setPosition(null); // null = centered via CSS
+      setPosition(null);
     }
   }, [isOpen]);
 
@@ -39,7 +72,6 @@ function Overlay({
 
   // Drag handlers
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    // Only drag from the header
     if (!overlayRef.current) return;
     e.preventDefault();
 
@@ -50,7 +82,6 @@ function Overlay({
       y: e.clientY - rect.top,
     };
 
-    // If starting from centered position, initialize actual pixel position
     if (!position) {
       setPosition({ x: rect.left, y: rect.top });
     }
@@ -61,11 +92,7 @@ function Overlay({
 
     const handleMouseMove = (e: globalThis.MouseEvent) => {
       if (!isDragging.current) return;
-
-      const newX = e.clientX - dragOffset.current.x;
-      const newY = e.clientY - dragOffset.current.y;
-
-      setPosition({ x: newX, y: newY });
+      setPosition({ x: e.clientX - dragOffset.current.x, y: e.clientY - dragOffset.current.y });
     };
 
     const handleMouseUp = () => {
@@ -83,13 +110,9 @@ function Overlay({
   // Handle ESC key to close
   useEffect(() => {
     if (!isOpen) return;
-
     const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onClose();
-      }
+      if (e.key === "Escape") onClose();
     };
-
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
   }, [isOpen, onClose]);
@@ -97,21 +120,14 @@ function Overlay({
   // Handle clicks outside overlay to close
   useEffect(() => {
     if (!isOpen) return;
-
     const handleClickOutside = (e: MouseEvent) => {
-      if (
-        overlayRef.current &&
-        !overlayRef.current.contains(e.target as Node)
-      ) {
+      if (overlayRef.current && !overlayRef.current.contains(e.target as Node)) {
         onClose();
       }
     };
-
-    // Small delay to avoid closing immediately when opening
     setTimeout(() => {
       document.addEventListener("mousedown", handleClickOutside);
     }, 100);
-
     return () => {
       document.removeEventListener("mousedown", handleClickOutside);
     };
@@ -119,44 +135,73 @@ function Overlay({
 
   if (!isOpen) return null;
 
-  // When position is null, use centered CSS; otherwise use dragged pixel position
   const overlayStyle: React.CSSProperties = position
-    ? {
-        position: "fixed",
-        top: position.y,
-        left: position.x,
-        zIndex: 1000,
-      }
-    : {
-        position: "fixed",
-        top: "50%",
-        left: "50%",
-        transform: "translate(-50%, -50%)",
-        zIndex: 1000,
-      };
+    ? { position: "fixed", top: position.y, left: position.x, zIndex: 1000 }
+    : { position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)", zIndex: 1000 };
 
   return (
-    <div
-      ref={overlayRef}
-      className="ai-overlay"
-      style={overlayStyle}
-    >
-      <div
-        className="ai-overlay-header"
-        onMouseDown={handleMouseDown}
-        style={{ cursor: "grab" }}
-      >
+    <div ref={overlayRef} className="ai-overlay" style={overlayStyle}>
+      <div className="ai-overlay-header" onMouseDown={handleMouseDown} style={{ cursor: "grab" }}>
         <span className="ai-overlay-title">Summon Infinite Monkeys</span>
-        <button
-          type="button"
-          className="ai-overlay-close"
-          onClick={onClose}
-          title="Close (Esc)"
-        >
+        <button type="button" className="ai-overlay-close" onClick={onClose} title="Close (Esc)">
           ×
         </button>
       </div>
       <div className="ai-overlay-body">
+        <div className="ai-overlay-agent-picker">
+          <label className="ai-overlay-agent-label" htmlFor="agent-select">Monkey Agent</label>
+          <select
+            id="agent-select"
+            className="ai-overlay-agent-select"
+            value={selectedAgentId ?? ""}
+            onChange={(e) => onAgentChange(e.target.value || null)}
+          >
+            <option value="">No agent (default)</option>
+            {agents.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name} — {a.role}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="ai-overlay-context-picker">
+          <label className="ai-overlay-context-label" htmlFor="context-select">Context (up to 5)</label>
+          <div className="ai-overlay-context-list" id="context-select" role="group" aria-label="Select contexts">
+            {contexts.length === 0 ? (
+              <div className="ai-overlay-context-empty">No contexts found.</div>
+            ) : (
+              contexts.map((c) => {
+                const checked = selectedContextIds.includes(c.id);
+                const disabled = !checked && selectedContextIds.length >= 5;
+                return (
+                  <label key={c.id} className={`ai-overlay-context-option${disabled ? " is-disabled" : ""}`}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={disabled}
+                      onChange={() => {
+                        const has = selectedContextIds.includes(c.id);
+                        if (has) {
+                          setContextError(null);
+                          onContextChange(selectedContextIds.filter((x) => x !== c.id));
+                          return;
+                        }
+                        if (selectedContextIds.length >= 5) {
+                          setContextError("You can select up to 5 contexts.");
+                          return;
+                        }
+                        setContextError(null);
+                        onContextChange([...selectedContextIds, c.id]);
+                      }}
+                    />
+                    <span className="ai-overlay-context-option-title">{c.title}</span>
+                  </label>
+                );
+              })
+            )}
+          </div>
+        </div>
+        {contextError && <div className="ai-overlay-context-error">{contextError}</div>}
         <textarea
           ref={inputRef}
           className="ai-overlay-input"
@@ -165,32 +210,30 @@ function Overlay({
           rows={1}
           onChange={(e) => {
             onPromptChange(e.target.value);
-            // Auto-resize: reset height then set to scrollHeight
             e.target.style.height = "auto";
             e.target.style.height = e.target.scrollHeight + "px";
           }}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && prompt.trim()) {
+            if (
+              e.key === "Enter" &&
+              !e.shiftKey &&
+              (prompt.trim() || selectedAgentId)
+            ) {
               e.preventDefault();
               onSubmit();
             }
-            // Shift+Enter naturally inserts a newline in textarea
           }}
         />
       </div>
       <div className="ai-overlay-footer">
-        <button
-          type="button"
-          className="ai-overlay-btn ai-overlay-btn-reject"
-          onClick={onClose}
-        >
+        <button type="button" className="ai-overlay-btn ai-overlay-btn-reject" onClick={onClose}>
           Cancel
         </button>
         <button
           type="button"
           className="ai-overlay-btn ai-overlay-btn-accept"
           onClick={onSubmit}
-          disabled={!prompt.trim()}
+          disabled={!prompt.trim() && !selectedAgentId}
         >
           Summon
         </button>

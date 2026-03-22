@@ -128,3 +128,22 @@ export async function updateAgent(
 export async function deleteAgent(id: string): Promise<void> {
   await apiFetch(`/api/agents/${id}`, { method: "DELETE" });
 }
+
+export interface AgentSearchMatch {
+  id: string;
+  score: number;
+}
+
+export async function searchAgents(
+  query: string,
+  topK = 10
+): Promise<AgentSearchMatch[]> {
+  const data = await apiFetch<{ matches: AgentSearchMatch[] }>(
+    "/api/agents/search",
+    {
+      method: "POST",
+      body: JSON.stringify({ query, topK }),
+    }
+  );
+  return data.matches;
+}

@@ -6,7 +6,8 @@ const SPHERE_RADIUS = 0.07;
 const HALO_INNER = 0.09;
 const HALO_OUTER = 0.115;
 const LABEL_OFFSET_Y = 0.18;
-const SPREAD = 28;
+// Overall network radius. Smaller = nodes cluster closer.
+const SPREAD = 14;
 const EDGE_CONNECTIONS = 3;
 const EDGE_TUBE_RADIUS = 0.005;
 
@@ -15,20 +16,7 @@ const AEGEAN_BLUE = 0x1b3a5c;
 const GREEK_GOLD = 0xc9a84c;
 const MARBLE_BG = 0xf8f6f1;
 
-const FILLER_NAMES = [
-  "Architect", "Sculptor", "Ethos", "Logos", "Pathos", "Brainstorm",
-  "Writer", "Editor", "Critic", "Scholar", "Storyteller", "Narrator",
-  "Analyst", "Synthesizer", "Reframer", "Outliner", "Strategist", "Logician",
-  "Stylist", "Voice", "Structure", "Rhetorician", "Poet", "Orator",
-  "Researcher", "Fact-checker", "Historian", "Archivist", "Curator", "Librarian",
-  "Inventor", "Dreamer", "Visionary", "Muse", "Philosopher", "Oracle",
-  "Tinkerer", "Forger", "Alchemist", "Cartographer", "Scribe", "Herald",
-  "Advocate", "Devil's Adv.", "Mediator", "Judge", "Witness", "Counselor",
-  "Overseer", "Sentinel", "Navigator", "Pioneer", "Mentor", "Apprentice",
-  "Sage", "Mystic", "Chronicler", "Translator", "Decoder", "Cipher",
-  "Dramatist", "Satirist", "Lyricist", "Bard", "Troubadour", "Balladeer",
-  "Architect II", "Engineer", "Builder", "Planner", "Auditor", "Inspector",
-];
+export type NeuralNode = { id: string; name: string };
 
 function createLabelSprite(name: string): THREE.Sprite {
   const canvas = document.createElement("canvas");
@@ -82,13 +70,22 @@ export interface NeuralNetworkSceneHandle {
 }
 
 interface NeuralNetworkSceneProps {
-  onHoverNode: (name: string | null) => void;
+  nodes: NeuralNode[];
+  onHoverNode: (id: string | null) => void;
+  highlightNodeIds?: string[];
 }
 
 const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSceneProps>(
-  function NeuralNetworkScene({ onHoverNode }, ref) {
+  function NeuralNetworkScene({ nodes, onHoverNode, highlightNodeIds }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const hoveredRef = useRef<string | null>(null);
+  const highlightSetRef = useRef<Set<string>>(new Set());
+  const currentHoveredMeshRef = useRef<THREE.Mesh | null>(null);
+  const spheresRef = useRef<THREE.Mesh[]>([]);
+  const meshToIdRef = useRef<Map<THREE.Object3D, string>>(new Map());
+  const defaultMatRef = useRef<THREE.MeshPhysicalMaterial | null>(null);
+  const hoverMatRef = useRef<THREE.MeshPhysicalMaterial | null>(null);
+  const highlightMatRef = useRef<THREE.MeshPhysicalMaterial | null>(null);
   const resetRef = useRef<(() => void) | null>(null);
 
   useImperativeHandle(ref, () => ({
@@ -96,10 +93,10 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
   }));
 
   const notify = useCallback(
-    (name: string | null) => {
-      if (name === hoveredRef.current) return;
-      hoveredRef.current = name;
-      onHoverNode(name);
+    (id: string | null) => {
+      if (id === hoveredRef.current) return;
+      hoveredRef.current = id;
+      onHoverNode(id);
     },
     [onHoverNode]
   );
@@ -117,7 +114,8 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
       0.1,
       1000
     );
-    const INITIAL_POS = new THREE.Vector3(0, 2, SPREAD * 0.45);
+    // Bring camera a bit closer to match tighter spread.
+    const INITIAL_POS = new THREE.Vector3(0, 1.2, SPREAD * 0.55);
     const INITIAL_TARGET = new THREE.Vector3(0, 0, 0);
     camera.position.copy(INITIAL_POS);
     camera.lookAt(INITIAL_TARGET);
@@ -136,7 +134,7 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
     controls.enablePan = true;
     controls.enableZoom = true;
     controls.minDistance = 2;
-    controls.maxDistance = 120;
+    controls.maxDistance = 80;
     controls.target.set(0, 0, 0);
 
     const ambient = new THREE.AmbientLight(0xfff5e6, 0.5);
@@ -151,7 +149,7 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
     backLight.position.set(0, -6, -10);
     scene.add(backLight);
 
-    const positions = volumeLayout(FILLER_NAMES.length);
+    const positions = volumeLayout(nodes.length);
 
     const sphereGeom = new THREE.SphereGeometry(SPHERE_RADIUS, 32, 24);
 
@@ -162,6 +160,7 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
       clearcoat: 0.6,
       clearcoatRoughness: 0.15,
     });
+    defaultMatRef.current = defaultMat;
 
     const hoverMat = new THREE.MeshPhysicalMaterial({
       color: GREEK_GOLD,
@@ -172,6 +171,19 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
       emissive: GREEK_GOLD,
       emissiveIntensity: 0.3,
     });
+    hoverMatRef.current = hoverMat;
+
+    // Search highlight (blue) for matching nodes
+    const highlightMat = new THREE.MeshPhysicalMaterial({
+      color: 0x1a73e8,
+      roughness: 0.18,
+      metalness: 0.35,
+      clearcoat: 0.7,
+      clearcoatRoughness: 0.12,
+      emissive: 0x1a73e8,
+      emissiveIntensity: 0.18,
+    });
+    highlightMatRef.current = highlightMat;
 
     const haloGeom = new THREE.RingGeometry(HALO_INNER, HALO_OUTER, 32);
     const haloMat = new THREE.MeshBasicMaterial({
@@ -185,15 +197,18 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
     const spheres: THREE.Mesh[] = [];
     const halos: THREE.Mesh[] = [];
     const labels: THREE.Sprite[] = [];
+    const meshToId = new Map<THREE.Object3D, string>();
     const meshToName = new Map<THREE.Object3D, string>();
 
-    FILLER_NAMES.forEach((name, i) => {
+    nodes.forEach((node, i) => {
+      const name = node.name;
       const pos = positions[i]!;
 
       const mesh = new THREE.Mesh(sphereGeom, defaultMat);
       mesh.position.copy(pos);
       scene.add(mesh);
       spheres.push(mesh);
+      meshToId.set(mesh, node.id);
       meshToName.set(mesh, name);
 
       const halo = new THREE.Mesh(haloGeom, haloMat);
@@ -206,6 +221,9 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
       scene.add(label);
       labels.push(label);
     });
+
+    spheresRef.current = spheres;
+    meshToIdRef.current = meshToId;
 
     const edgeMat = new THREE.MeshBasicMaterial({
       color: 0xd4c4a0,
@@ -237,8 +255,6 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
     // Raycasting for hover
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
-    let currentHovered: THREE.Mesh | null = null;
-
     const onPointerMove = (e: PointerEvent) => {
       const rect = container.getBoundingClientRect();
       mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -247,26 +263,41 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
       const hits = raycaster.intersectObjects(spheres, false);
       const hit = hits[0];
 
-      if (hit?.object instanceof THREE.Mesh && meshToName.has(hit.object)) {
-        if (currentHovered !== hit.object) {
-          if (currentHovered) currentHovered.material = defaultMat;
-          currentHovered = hit.object;
-          currentHovered.material = hoverMat;
-          notify(meshToName.get(hit.object) ?? null);
+      if (hit?.object instanceof THREE.Mesh && meshToId.has(hit.object)) {
+        if (currentHoveredMeshRef.current !== hit.object) {
+          const prev = currentHoveredMeshRef.current;
+          if (prev) {
+            const prevId = meshToId.get(prev) ?? null;
+            prev.material = highlightSetRef.current.has(prevId ?? "") ? (highlightMatRef.current ?? defaultMat) : defaultMat;
+          }
+
+          currentHoveredMeshRef.current = hit.object;
+
+          const id = meshToId.get(hit.object) ?? null;
+          const shouldHighlight = id ? highlightSetRef.current.has(id) : false;
+          currentHoveredMeshRef.current.material = shouldHighlight
+            ? highlightMat
+            : hoverMatRef.current ?? hoverMat;
+
+          notify(meshToId.get(hit.object) ?? null);
         }
       } else {
-        if (currentHovered) {
-          currentHovered.material = defaultMat;
-          currentHovered = null;
+        const prev = currentHoveredMeshRef.current;
+        if (prev) {
+          const prevId = meshToId.get(prev) ?? null;
+          prev.material = highlightSetRef.current.has(prevId ?? "") ? (highlightMatRef.current ?? defaultMat) : defaultMat;
+          currentHoveredMeshRef.current = null;
           notify(null);
         }
       }
     };
 
     const onPointerLeave = () => {
-      if (currentHovered) {
-        currentHovered.material = defaultMat;
-        currentHovered = null;
+      const prev = currentHoveredMeshRef.current;
+      if (prev) {
+        const prevId = meshToId.get(prev) ?? null;
+        prev.material = highlightSetRef.current.has(prevId ?? "") ? (highlightMatRef.current ?? defaultMat) : defaultMat;
+        currentHoveredMeshRef.current = null;
         notify(null);
       }
     };
@@ -295,7 +326,7 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
       raycaster.setFromCamera(mouse, camera);
       const hits = raycaster.intersectObjects(spheres, false);
       const hit = hits[0];
-      if (hit?.object instanceof THREE.Mesh && meshToName.has(hit.object)) {
+      if (hit?.object instanceof THREE.Mesh && meshToId.has(hit.object)) {
         const nodePos = hit.object.position.clone();
         const dir = new THREE.Vector3().subVectors(camera.position, nodePos).normalize();
         flyStart = camera.position.clone();
@@ -353,6 +384,7 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
       sphereGeom.dispose();
       defaultMat.dispose();
       hoverMat.dispose();
+      highlightMat.dispose();
       haloGeom.dispose();
       haloMat.dispose();
       labels.forEach((s) => {
@@ -367,7 +399,31 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
         container.removeChild(renderer.domElement);
       }
     };
-  }, [notify]);
+  }, [notify, nodes]);
+
+  // Search highlight updates (blue nodes) without rebuilding the whole scene.
+  useEffect(() => {
+    highlightSetRef.current = new Set(highlightNodeIds ?? []);
+    const spheres = spheresRef.current;
+    const meshToId = meshToIdRef.current;
+    const defaultMat = defaultMatRef.current;
+    const hoverMat = hoverMatRef.current;
+    const highlightMat = highlightMatRef.current;
+    if (!defaultMat || !hoverMat || !highlightMat) return;
+
+    const hoveredMesh = currentHoveredMeshRef.current;
+    for (const mesh of spheres) {
+      const id = meshToId.get(mesh);
+      const shouldHighlight = id ? highlightSetRef.current.has(id) : false;
+      if (shouldHighlight) {
+        mesh.material = highlightMat;
+      } else if (hoveredMesh && mesh === hoveredMesh) {
+        mesh.material = hoverMat;
+      } else {
+        mesh.material = defaultMat;
+      }
+    }
+  }, [highlightNodeIds]);
 
   return <div ref={containerRef} className="neural-network-scene" aria-hidden="true" />;
 });

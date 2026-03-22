@@ -42,12 +42,14 @@ export default function Scene3D() {
     if (!container) return;
 
     const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
+    const w = Math.max(1, container.clientWidth);
+    const h = Math.max(1, container.clientHeight);
+    const camera = new THREE.PerspectiveCamera(50, w / h, 0.1, 1000);
     camera.position.set(0, 0, 6);
     camera.lookAt(0, 0, -2);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setSize(w, h);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setClearColor(0x000000, 0);
     renderer.domElement.style.pointerEvents = "auto";
@@ -240,10 +242,17 @@ export default function Scene3D() {
       raycaster.setFromCamera(mouse, camera);
       const intersects = raycaster.intersectObjects(scene.children, true);
       const bookHit = intersects.find((i) => i.object.userData?.isBook === true);
+      const bookStackHit = intersects.find(
+        (i) => i.object.userData?.isBookStack === true
+      );
       const mapHit = intersects.find((i) => i.object.userData?.isMap === true);
-      if (bookHit) {
-        const meta = createDoc();
-        navigate(`/doc/${meta.id}`);
+      if (bookStackHit) {
+        navigate("/docs?drive=context");
+      } else if (bookHit) {
+        void (async () => {
+          const meta = await createDoc();
+          navigate(`/doc/${meta.id}`);
+        })();
       } else if (mapHit) {
         navigate("/monkey-agents-network");
       }
@@ -255,9 +264,11 @@ export default function Scene3D() {
     renderer.domElement.addEventListener("pointerdown", onPointerDown);
 
     const onResize = () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
+      const nw = Math.max(1, container.clientWidth);
+      const nh = Math.max(1, container.clientHeight);
+      camera.aspect = nw / nh;
       camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setSize(nw, nh);
     };
     window.addEventListener("resize", onResize);
 
@@ -283,8 +294,15 @@ export default function Scene3D() {
   const mapOverlayY = vh * MAP_OVERLAY_TOP_RATIO;
 
   const handleCreateDocument = () => {
-    const meta = createDoc();
-    navigate(`/doc/${meta.id}`);
+    void (async () => {
+      const meta = await createDoc();
+      navigate(`/doc/${meta.id}`);
+    })();
+  };
+
+  const handleOpenContextLibrary = () => {
+    // Teleport to the contexts section in the Drive.
+    navigate("/docs?drive=context");
   };
 
   /* Hint positions (percent of viewport): 1=book stack, 2=open book, 3=map, 4=lamp — tuned for desk layout */
@@ -368,7 +386,11 @@ export default function Scene3D() {
               markerEnd="url(#scene3d-arrowhead-stack)"
             />
           </svg>
-          <button type="button" className="scene3d-create-overlay scene3d-context-library-overlay">
+          <button
+            type="button"
+            className="scene3d-create-overlay scene3d-context-library-overlay"
+            onClick={handleOpenContextLibrary}
+          >
             Create context library
           </button>
         </>

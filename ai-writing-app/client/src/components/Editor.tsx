@@ -1,4 +1,5 @@
 import { useEditor, EditorContent } from "@tiptap/react";
+import type { Editor as TiptapEditor } from "@tiptap/react";
 import { useRef, useState, useEffect, useCallback, MouseEvent } from "react";
 import StarterKit from "@tiptap/starter-kit";
 import Underline from "@tiptap/extension-underline";
@@ -9,19 +10,25 @@ import FontFamily from "@tiptap/extension-font-family";
 import { FontSize } from "../extensions/FontSize";
 import Toolbar from "./Toolbar";
 import Overlay from "./Overlay";
+import type { WritingEffectId } from "./DocMenuBar";
+import { joinForward } from "@tiptap/pm/commands";
+import { getAgent } from "../lib/agents";
+import { extractSentenceContext } from "../lib/extractSentenceContext";
 
-/** Page dimensions at 96 DPI (US Letter) */
-const PAGE_HEIGHT = 1056;
+/** Fixed 50 lines per page. Line height in px (11pt × 1.15 ≈ 17). */
+const LINES_PER_PAGE = 50;
+const LINE_HEIGHT_PX = 17;
+/** Top/bottom margin per page in px (matches .tiptap padding). */
+const PAGE_MARGIN_PX = 72;
+/** Height of one page card: margin + 50 lines + margin */
+const PAGE_HEIGHT =
+  PAGE_MARGIN_PX + LINES_PER_PAGE * LINE_HEIGHT_PX + PAGE_MARGIN_PX;
 /** Gap between stacked page cards in px */
-const GAP_HEIGHT = 16;
-/** Top/bottom margin per page in px (1 inch at 96 DPI) */
-const PAGE_MARGIN = 72;
-/** Approximate line height in pixels (11pt font with 1.15 line-height) */
-const LINE_HEIGHT = 17;
+const GAP_HEIGHT = 25;
 /** Highlight color used for pending rewrites */
 const HIGHLIGHT_COLOR = "#ffcdd2";
 /** Initial number of spacer paragraphs for loading state (kept small so short rewrites don't add big gaps) */
-const INITIAL_SPACER_COUNT = 2;
+const INITIAL_SPACER_COUNT = 1;
 
 let nextRewriteId = 0;
 
@@ -58,7 +65,8 @@ function randomMonkeyId(): string {
       return n.toLocaleString();
     },
   ];
-  return styles[Math.floor(Math.random() * styles.length)]();
+  const pick = styles[Math.floor(Math.random() * styles.length)] ?? styles[0];
+  return (pick ?? (() => "1"))();
 }
 
 // Compute where spacer paragraphs should be inserted. If the selection ends
@@ -98,6 +106,23 @@ function computeSpacerInsertPos(doc: any, selTo: number): number {
   return selTo + 1;
 }
 
+/** Merge paragraphs split by spacer `<p>` inserts so the sentence flows in one block again. */
+function joinSplitParagraphsAfterSpacerRemoval(editor: TiptapEditor) {
+  const st0 = editor.state;
+  const $h0 = st0.selection.$head;
+  // joinForward only runs when the caret is at the *end* of a textblock (see prosemirror-commands
+  // atBlockEnd). After insertContent the caret is usually mid-paragraph, so move to block end first.
+  let tbDepth = $h0.depth;
+  while (tbDepth > 0 && !$h0.node(tbDepth).isTextblock) tbDepth--;
+  if (tbDepth > 0) {
+    const endPos = $h0.end(tbDepth);
+    editor.chain().focus().setTextSelection(endPos).run();
+  }
+  for (let i = 0; i < 8; i++) {
+    if (!joinForward(editor.state, editor.view.dispatch, editor.view)) break;
+  }
+}
+
 interface PendingRewrite {
   id: number;
   monkeyId: string;
@@ -113,6 +138,12 @@ interface PendingRewrite {
   spacerTo: number;
 }
 
+/** Synonym specialist agents: seeded "Synonym Sensei Monkey" or common renames like "Synonym Monkey". */
+function isSynonymSpecialistAgentName(name: string): boolean {
+  const n = name.toLowerCase();
+  return n.includes("synonym sensei") || n.includes("synonym monkey");
+}
+
 const SAVE_DEBOUNCE_MS = 1500;
 const PERIODIC_SAVE_MS = 30_000;
 
@@ -120,9 +151,11 @@ interface EditorProps {
   docId?: string;
   initialContent?: string;
   onSaveContent?: (content: string) => void;
+  onEditorReady?: (editor: TiptapEditor) => void;
+  writingEffect?: WritingEffectId | null;
 }
 
-function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProps) {
+function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorReady, writingEffect = "none" }: EditorProps) {
   const editor = useEditor({
     extensions: [
       StarterKit,
@@ -140,7 +173,12 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProp
   const contentRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
   const [pageCount, setPageCount] = useState(1);
+  const [containerMinHeight, setContainerMinHeight] = useState(PAGE_HEIGHT);
   const [contentVersion, setContentVersion] = useState(0);
+
+  useEffect(() => {
+    if (editor && onEditorReady) onEditorReady(editor);
+  }, [editor, onEditorReady]);
 
   // Overlay state
   const [isOverlayOpen, setIsOverlayOpen] = useState(false);
@@ -149,6 +187,8 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProp
     to: number;
   } | null>(null);
   const [prompt, setPrompt] = useState("");
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [selectedContextIds, setSelectedContextIds] = useState<string[]>([]);
 
   // Multiple inline suggestions state
   const [pendingRewrites, setPendingRewrites] = useState<PendingRewrite[]>([]);
@@ -262,29 +302,11 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProp
       if (!lastChild) return;
       const lastChildRect = lastChild.getBoundingClientRect();
 
-      // If the click is at or above the last content line, let TipTap handle it
+      // Only allow normal TipTap positioning within existing content.
+      // If the click is below all content, do nothing — later lines/pages are
+      // reached only by typing/Enter.
       if (e.clientY <= lastChildRect.bottom + 5) return;
-
-      // Click is below all content — add enough paragraphs to reach it
-      const distanceBelowContent = e.clientY - lastChildRect.bottom;
-      const linesToAdd = Math.max(
-        1,
-        Math.ceil(distanceBelowContent / LINE_HEIGHT)
-      );
-
-      editor
-        .chain()
-        .focus("end")
-        .command(({ tr, state }) => {
-          const paragraphType = state.schema.nodes["paragraph"];
-          if (!paragraphType) return false;
-          for (let i = 0; i < linesToAdd; i++) {
-            tr.insert(tr.doc.content.size, paragraphType.create());
-          }
-          return true;
-        })
-        .focus("end")
-        .run();
+      return;
     },
     [editor, pageCount]
   );
@@ -296,102 +318,35 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProp
     const tiptapEl = contentEl.querySelector(".tiptap");
     if (!tiptapEl) return;
 
-    // scrollHeight includes padding + any pagination margins paginateContent injected.
-    // Each page slot in the container is PAGE_HEIGHT + GAP_HEIGHT wide except the last,
-    // so the correct formula is ceil((h + GAP) / (PAGE_HEIGHT + GAP_HEIGHT)).
+    // Continuous page: container and page background grow with content.
     const contentHeight = tiptapEl.scrollHeight;
+    setContainerMinHeight(contentHeight);
     const contentPages = Math.ceil(
       (contentHeight + GAP_HEIGHT) / (PAGE_HEIGHT + GAP_HEIGHT)
     );
     const newPageCount = Math.max(1, contentPages);
     setPageCount(newPageCount);
-  }, []);
+  }, [editor]);
 
-  /**
-   * Pushes block-level elements past page boundary "forbidden zones".
-   *
-   * Each zone spans: (bottom margin of page N) → (top margin of page N+1)
-   *   = PAGE_HEIGHT - PAGE_MARGIN  →  N*(PAGE_HEIGHT+GAP_HEIGHT) + PAGE_MARGIN
-   *
-   * We walk blocks in document order, accumulating any extra offset we've
-   * injected, so every block's effective position is always up to date.
-   */
-  const paginateContent = useCallback(() => {
-    const tiptapEl = contentRef.current?.querySelector(
-      ".tiptap"
-    ) as HTMLElement | null;
-    if (!tiptapEl) return;
-
-    const blocks = Array.from(tiptapEl.children) as HTMLElement[];
-    if (blocks.length === 0) return;
-
-    // 1. Clear all pagination margins we previously injected
-    blocks.forEach((el) => {
-      el.style.marginTop = "";
-    });
-
-    // 2. One forced reflow so offsetTop values reflect cleared state
-    void tiptapEl.offsetHeight;
-
-    // 3. Snapshot all positions (no custom margins in play)
-    const positions = blocks.map((el) => ({
-      top: el.offsetTop,
-      height: el.offsetHeight,
-    }));
-
-    const maxGaps = Math.ceil(tiptapEl.scrollHeight / PAGE_HEIGHT) + 2;
-    let extraOffset = 0;
-
-    for (let idx = 0; idx < blocks.length; idx++) {
-      const pos = positions[idx];
-      if (!pos) continue;
-      let top = pos.top + extraOffset;
-      const bottom = top + pos.height;
-
-      for (let g = 1; g <= maxGaps; g++) {
-        // Forbidden zone g:
-        //   fStart = where the bottom margin of page g begins
-        //   fEnd   = where the top margin of page g+1 ends
-        const fStart =
-          g * PAGE_HEIGHT + (g - 1) * GAP_HEIGHT - PAGE_MARGIN;
-        const fEnd = g * (PAGE_HEIGHT + GAP_HEIGHT) + PAGE_MARGIN;
-
-        if (fStart > bottom) break; // gap is entirely below this block
-
-        if (top < fEnd && bottom > fStart) {
-          const push = fEnd - top;
-          if (push > 0) {
-            blocks[idx].style.marginTop = `${push}px`;
-            extraOffset += push;
-            top = fEnd; // update local top for subsequent gap checks
-          }
-          // keep looping — a very tall block might cross the next gap too
-        }
-      }
-    }
-  }, []);
-
-  // Watch for content changes via ResizeObserver
+  // Watch for content changes so the scrollable area grows with the document.
   useEffect(() => {
     const contentEl = contentRef.current;
     if (!contentEl) return;
 
     const observer = new ResizeObserver(() => {
-      paginateContent();
       updatePageCount();
     });
     observer.observe(contentEl);
 
     return () => observer.disconnect();
-  }, [updatePageCount, paginateContent]);
+  }, [updatePageCount]);
 
-  // Also update on editor transactions
+  // Update page count (container height) on editor changes.
   useEffect(() => {
     if (!editor) return;
 
     const handleUpdate = () => {
       requestAnimationFrame(() => {
-        paginateContent();
         updatePageCount();
         setContentVersion((v) => v + 1);
       });
@@ -401,17 +356,15 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProp
     return () => {
       editor.off("update", handleUpdate);
     };
-  }, [editor, updatePageCount, paginateContent]);
+  }, [editor, updatePageCount]);
 
-  // Run pagination once after the editor first mounts
+  // Initial container height after mount.
   useEffect(() => {
     if (!editor) return;
     requestAnimationFrame(() => {
-      paginateContent();
       updatePageCount();
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor]);
+  }, [editor, updatePageCount]);
 
   // Track ALL pending rewrite positions through editor transactions
   useEffect(() => {
@@ -510,17 +463,14 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProp
           //
           // We allow multiple small nudges per rewrite so that as the rewritten
           // text grows line‑by‑line, we keep adding just enough space rather
-          // than guessing all at once — but we (a) disable nudging entirely for
-          // very short rewrites and (b) cap the total so nothing can create an
-          // effectively infinite amount of blank space.
+          // than guessing all at once. Cap extra paras so short rewrites don't
+          // add too much blank space; long rewrites can use more.
           const currentExtra = spacerAdjustedRef.current[rw.id] ?? 0;
-          const MAX_EXTRA_PARAS = 8;
           const isShortRewrite = approxRewriteLen < 120;
+          const MAX_EXTRA_PARAS = isShortRewrite ? 3 : 8;
 
-          if (overlap > 0 && !isShortRewrite && currentExtra < MAX_EXTRA_PARAS) {
-            // Approximate how many extra paragraphs we need to fully clear the
-            // overlap. Each empty paragraph is roughly one line of height.
-            const pixelsPerPara = LINE_HEIGHT + 4;
+          if (overlap > 0 && currentExtra < MAX_EXTRA_PARAS) {
+            const pixelsPerPara = LINE_HEIGHT_PX + 4;
             const remaining = MAX_EXTRA_PARAS - currentExtra;
             const extraParas = Math.max(
               1,
@@ -531,8 +481,10 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProp
               .chain()
               .command(({ tr, state }) => {
                 let pos = rw.spacerTo;
+                const paragraphType = state.schema.nodes["paragraph"];
+                if (!paragraphType) return false;
                 for (let i = 0; i < extraParas; i++) {
-                  const para = state.schema.nodes.paragraph.create();
+                  const para = paragraphType.create();
                   tr.insert(pos, para);
                   pos += 2;
                 }
@@ -541,6 +493,13 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProp
               .run();
 
             spacerAdjustedRef.current[rw.id] = currentExtra + extraParas;
+
+            const newSpacerTo = rw.spacerTo + extraParas * 2;
+            const updated = pendingRewritesRef.current.map((r) =>
+              r.id === rw.id ? { ...r, spacerTo: newSpacerTo } : r
+            );
+            pendingRewritesRef.current = updated;
+            setPendingRewrites(updated);
 
             break;
           }
@@ -609,14 +568,23 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProp
                 .chain()
                 .command(({ tr, state }) => {
                   let pos = currentRef.spacerTo;
+                  const paragraphType = state.schema.nodes["paragraph"];
+                  if (!paragraphType) return false;
                   for (let i = 0; i < extraNeeded; i++) {
-                    const para = state.schema.nodes.paragraph.create();
+                    const para = paragraphType.create();
                     tr.insert(pos, para);
                     pos += 2;
                   }
                   return true;
                 })
                 .run();
+
+              const newSpacerTo = currentRef.spacerTo + extraNeeded * 2;
+              const updated = pendingRewritesRef.current.map((r) =>
+                r.id === rw.id ? { ...r, spacerTo: newSpacerTo } : r
+              );
+              pendingRewritesRef.current = updated;
+              setPendingRewrites(updated);
             }
           }
         }
@@ -710,11 +678,25 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProp
 
   // Fetch rewrite from API
   const fetchRewrite = useCallback(
-    async (text: string, userPrompt: string): Promise<string> => {
+    async (
+      text: string,
+      userPrompt: string,
+      agentId?: string | null,
+      contextIds?: string[] | null,
+      sentenceContext?: string | null
+    ): Promise<string> => {
+      const payload: Record<string, unknown> = { text, prompt: userPrompt };
+      if (agentId) payload.agentId = agentId;
+      if (contextIds && contextIds.length) {
+        payload.contextIds = contextIds.slice(0, 5);
+      }
+      const trimmedCtx = sentenceContext?.trim();
+      if (trimmedCtx) payload.sentenceContext = trimmedCtx;
+
       const response = await fetch("http://localhost:3001/api/rewrite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, prompt: userPrompt }),
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) {
@@ -739,12 +721,21 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProp
 
   // Handle overlay submit — close overlay, highlight text, insert spacers, start async API call
   const handleOverlaySubmit = useCallback(async () => {
-    if (!prompt.trim() || !editor || !storedSelection) return;
+    if (!editor || !storedSelection) return;
     const doc = editor.state.doc;
-    const currentPrompt = prompt;
+    const currentAgentId = selectedAgentId;
+    const currentContextIds = selectedContextIds;
+    const trimmedPrompt = prompt.trim();
+    const currentPrompt =
+      trimmedPrompt ||
+      (currentAgentId
+        ? "Rewrite this selection in the agent's voice, improving clarity, flow, and style."
+        : "Rewrite this selection to improve clarity, flow, and style.");
     const sel = { ...storedSelection };
 
     const selectedText = doc.textBetween(sel.from, sel.to, " ");
+    // Before spacer insert (which can shift positions), capture sentence for Synonym Sensei.
+    const sentenceForSynonym = extractSentenceContext(doc, sel.from, sel.to);
 
     // Close overlay immediately
     setIsOverlayOpen(false);
@@ -762,9 +753,11 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProp
       .setTextSelection({ from: sel.from, to: sel.to })
       .setHighlight({ color: HIGHLIGHT_COLOR })
       .command(({ tr, state }) => {
+        const paragraphType = state.schema.nodes["paragraph"];
+        if (!paragraphType) return false;
         let pos = spacerInsertPos;
         for (let i = 0; i < INITIAL_SPACER_COUNT; i++) {
-          const para = state.schema.nodes.paragraph.create();
+          const para = paragraphType.create();
           tr.insert(pos, para);
           pos += 2;
         }
@@ -798,7 +791,27 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProp
 
     // Call API in background
     try {
-      const result = await fetchRewrite(selectedText, currentPrompt);
+      let sentenceContext: string | undefined;
+      let promptForApi = currentPrompt;
+      if (currentAgentId && sentenceForSynonym) {
+        const agent = await getAgent(currentAgentId);
+        if (agent && isSynonymSpecialistAgentName(agent.name)) {
+          sentenceContext = sentenceForSynonym;
+          const synonymCore =
+            "The phrase appears inside the sentence above. Pick one substitute that fits that exact meaning and grammar. For ambiguous words (e.g. draft, bank, bark), use only the sense supported by the surrounding words—never a different meaning. Return only the replacement phrase, same part of speech as the original where possible—no titles, glosses, or explanations.";
+          promptForApi = trimmedPrompt
+            ? `${trimmedPrompt}\n\n${synonymCore}`
+            : synonymCore;
+        }
+      }
+
+      const result = await fetchRewrite(
+        selectedText,
+        promptForApi,
+        currentAgentId,
+        currentContextIds,
+        sentenceContext
+      );
       setPendingRewrites((prev) =>
         prev.map((rw) =>
           rw.id === id
@@ -833,7 +846,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProp
           : rw
       );
     }
-  }, [prompt, editor, storedSelection, fetchRewrite]);
+  }, [prompt, editor, storedSelection, selectedAgentId, selectedContextIds, fetchRewrite]);
 
   // Accept a specific inline suggestion — remove spacers, replace highlighted text
   const handleSuggestionAccept = useCallback(
@@ -878,6 +891,8 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProp
         .deleteSelection()
         .insertContent(rewriteText)
         .run();
+
+      joinSplitParagraphsAfterSpacerRemoval(editor);
     },
     [editor]
   );
@@ -922,6 +937,8 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProp
         .unsetHighlight()
         .setTextSelection(to)
         .run();
+
+      joinSplitParagraphsAfterSpacerRemoval(editor);
     },
     [editor]
   );
@@ -931,22 +948,19 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProp
       <Toolbar editor={editor} />
       <div className="editor-page-area">
         <div
-          ref={pageRef}
-          className="pages-container"
-          style={{ height: pageCount * PAGE_HEIGHT + (pageCount - 1) * GAP_HEIGHT }}
-          onClick={handlePageClick}
+          className="writing-effect-wrapper"
+          data-writing-effect={writingEffect ?? "none"}
         >
-          {Array.from({ length: pageCount }, (_, i) => (
-            <div
-              key={i}
-              className="page-card"
-              style={{ top: i * (PAGE_HEIGHT + GAP_HEIGHT) }}
-            />
-          ))}
-
-          <div ref={contentRef} className="editor-content">
-            <EditorContent editor={editor} />
-          </div>
+          <div
+            ref={pageRef}
+            className="pages-container"
+            style={{ minHeight: containerMinHeight }}
+            onClick={handlePageClick}
+          >
+            <div className="page-card" />
+            <div ref={contentRef} className="editor-content">
+              <EditorContent editor={editor} />
+            </div>
 
           {/* Inline suggestions — one per pending rewrite */}
           {pendingRewrites.map((rw) => {
@@ -959,7 +973,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProp
                 ref={(el) => {
                   suggestionElRefs.current[rw.id] = el;
                 }}
-                className="inline-suggestion"
+                className={`inline-suggestion${rw.rewriteText && rw.rewriteText.length <= 60 ? " inline-suggestion-compact" : ""}`}
                 style={{
                   position: "absolute",
                   top: `${pos.top}px`,
@@ -1014,10 +1028,13 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProp
                             (r) => r.id === rw.id
                           );
                           if (idx !== -1) {
-                            pendingRewritesRef.current[idx] = {
-                              ...pendingRewritesRef.current[idx],
-                              rewriteText: newText,
-                            };
+                            const existing = pendingRewritesRef.current[idx];
+                            if (existing) {
+                              pendingRewritesRef.current[idx] = {
+                                ...existing,
+                                rewriteText: newText,
+                              };
+                            }
                           }
                         }}
                       />
@@ -1044,6 +1061,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProp
             );
           })}
         </div>
+        </div>
       </div>
       <Overlay
         isOpen={isOverlayOpen}
@@ -1051,6 +1069,10 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent }: EditorProp
         onSubmit={handleOverlaySubmit}
         prompt={prompt}
         onPromptChange={setPrompt}
+        selectedAgentId={selectedAgentId}
+        onAgentChange={setSelectedAgentId}
+        selectedContextIds={selectedContextIds}
+        onContextChange={setSelectedContextIds}
       />
     </>
   );

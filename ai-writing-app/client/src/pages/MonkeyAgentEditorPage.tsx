@@ -5,12 +5,8 @@ import { getAgent, updateAgent, type AgentMeta } from "../lib/agents";
 const SAVE_DEBOUNCE_MS = 1500;
 const PERIODIC_SAVE_MS = 30_000;
 
-interface RouteParams {
-  id: string;
-}
-
 export default function MonkeyAgentEditorPage() {
-  const { id } = useParams<RouteParams>();
+  const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
 
   const [agent, setAgent] = useState<AgentMeta | null>(null);

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactElement } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   listDocs,
@@ -13,6 +13,11 @@ import {
 import { listContexts, createContext, deleteContext, type ContextItem } from "../lib/contexts";
 import { listAgents, createAgent, deleteAgent, type AgentMeta } from "../lib/agents";
 
+function truncateDisplayName(value: string, maxChars = 20): string {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars)}...`;
+}
+
 export default function DocsPage() {
   const [docs, setDocs] = useState<DocMeta[]>([]);
   const [docsLoading, setDocsLoading] = useState(true);
@@ -21,6 +26,8 @@ export default function DocsPage() {
   const [contexts, setContexts] = useState<ContextItem[]>([]);
   const [contextSearch, setContextSearch] = useState("");
   const [agents, setAgents] = useState<AgentMeta[]>([]);
+  const [docSearch, setDocSearch] = useState("");
+  const [agentSearch, setAgentSearch] = useState("");
   const [searchParams, setSearchParams] = useSearchParams();
   const driveParam = searchParams.get("drive");
   const [activeDrive, _setActiveDrive] = useState<"documents" | "context" | "agents">(
@@ -38,6 +45,20 @@ export default function DocsPage() {
   const [newContextTitle, setNewContextTitle] = useState("Untitled context");
   const [isNewFolderModalOpen, setIsNewFolderModalOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("New folder");
+
+  const [isDeleteContextModalOpen, setIsDeleteContextModalOpen] = useState(false);
+  const [deleteContextId, setDeleteContextId] = useState<string | null>(null);
+  const [deleteContextTitle, setDeleteContextTitle] = useState("");
+  const [deleteContextTypedTitle, setDeleteContextTypedTitle] = useState("");
+
+  const [isDeleteAgentModalOpen, setIsDeleteAgentModalOpen] = useState(false);
+  const [deleteAgentId, setDeleteAgentId] = useState<string | null>(null);
+  const [deleteAgentTitle, setDeleteAgentTitle] = useState("");
+  const [deleteAgentTypedTitle, setDeleteAgentTypedTitle] = useState("");
+  const [isDeleteFolderModalOpen, setIsDeleteFolderModalOpen] = useState(false);
+  const [deleteFolderId, setDeleteFolderId] = useState<string | null>(null);
+  const [deleteFolderTitle, setDeleteFolderTitle] = useState("");
+  const [deleteFolderTypedTitle, setDeleteFolderTypedTitle] = useState("");
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -100,15 +121,32 @@ export default function DocsPage() {
     setIsNewFolderModalOpen(false);
   }
 
-  async function handleDeleteFolder(id: string) {
-    if (!window.confirm("Delete this folder and all documents inside it?")) return;
+  function handleDeleteFolder(id: string) {
+    const folder = folders.find((f) => f.id === id);
+    setDeleteFolderId(id);
+    setDeleteFolderTitle(folder?.name ?? "");
+    setDeleteFolderTypedTitle("");
+    setIsDeleteFolderModalOpen(true);
+  }
+
+  function handleCancelDeleteFolder() {
+    setIsDeleteFolderModalOpen(false);
+    setDeleteFolderId(null);
+    setDeleteFolderTitle("");
+    setDeleteFolderTypedTitle("");
+  }
+
+  async function handleConfirmDeleteFolder() {
+    if (!deleteFolderId) return;
+    if (deleteFolderTypedTitle.trim() !== deleteFolderTitle.trim()) return;
     try {
-      await deleteFolder(id);
+      await deleteFolder(deleteFolderId);
       setFolders(listAllFolders());
       listDocs().then(setDocs);
-      if (activeFolderId === id) {
+      if (activeFolderId === deleteFolderId) {
         setActiveFolderId(null);
       }
+      handleCancelDeleteFolder();
     } catch (err) {
       console.error("Failed to delete folder:", err);
     }
@@ -135,10 +173,30 @@ export default function DocsPage() {
     setIsNewContextModalOpen(false);
   }
 
-  async function handleContextDelete(id: string) {
-    if (!window.confirm("Delete this context?")) return;
+  async function handleContextDelete(id: string, title: string) {
+    setDeleteContextId(id);
+    setDeleteContextTitle(title);
+    setDeleteContextTypedTitle("");
+    setIsDeleteContextModalOpen(true);
+  }
+
+  function handleCancelDeleteContext() {
+    setIsDeleteContextModalOpen(false);
+    setDeleteContextId(null);
+    setDeleteContextTitle("");
+    setDeleteContextTypedTitle("");
+  }
+
+  async function handleConfirmDeleteContext() {
+    if (!deleteContextId) return;
+    if (deleteContextTypedTitle.trim() !== deleteContextTitle.trim()) return;
+
     try {
-      await deleteContext(id);
+      await deleteContext(deleteContextId);
+      setIsDeleteContextModalOpen(false);
+      setDeleteContextId(null);
+      setDeleteContextTitle("");
+      setDeleteContextTypedTitle("");
       listContexts().then(setContexts);
     } catch (err) {
       console.error("Failed to delete context:", err);
@@ -152,6 +210,23 @@ export default function DocsPage() {
       ctx.title.toLowerCase().includes(q) ||
       ctx.description.toLowerCase().includes(q) ||
       ctx.tags.some((t) => t.toLowerCase().includes(q))
+    );
+  });
+
+  const filteredDocs = docs.filter((doc) => {
+    if ((doc.folderId ?? null) !== activeFolderId) return false;
+    const q = docSearch.trim().toLowerCase();
+    if (!q) return true;
+    return doc.title.toLowerCase().includes(q);
+  });
+
+  const filteredAgents = agents.filter((agent) => {
+    const q = agentSearch.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      agent.name.toLowerCase().includes(q) ||
+      agent.role.toLowerCase().includes(q) ||
+      agent.strengths.toLowerCase().includes(q)
     );
   });
 
@@ -176,17 +251,37 @@ export default function DocsPage() {
     setIsNewAgentModalOpen(false);
   }
 
-  async function handleAgentDelete(id: string) {
-    if (!window.confirm("Delete this monkey agent?")) return;
+  async function handleAgentDelete(id: string, title: string) {
+    setDeleteAgentId(id);
+    setDeleteAgentTitle(title);
+    setDeleteAgentTypedTitle("");
+    setIsDeleteAgentModalOpen(true);
+  }
+
+  function handleCancelDeleteAgent() {
+    setIsDeleteAgentModalOpen(false);
+    setDeleteAgentId(null);
+    setDeleteAgentTitle("");
+    setDeleteAgentTypedTitle("");
+  }
+
+  async function handleConfirmDeleteAgent() {
+    if (!deleteAgentId) return;
+    if (deleteAgentTypedTitle.trim() !== deleteAgentTitle.trim()) return;
+
     try {
-      await deleteAgent(id);
+      await deleteAgent(deleteAgentId);
+      setIsDeleteAgentModalOpen(false);
+      setDeleteAgentId(null);
+      setDeleteAgentTitle("");
+      setDeleteAgentTypedTitle("");
       listAgents().then(setAgents);
     } catch (err) {
       console.error("Failed to delete agent:", err);
     }
   }
 
-  function renderFolderTree(parentId: string | null, depth = 0): JSX.Element[] {
+  function renderFolderTree(parentId: string | null, depth = 0): ReactElement[] {
     return folders
       .filter((f) => f.parentId === parentId)
       .map((folder) => (
@@ -200,7 +295,7 @@ export default function DocsPage() {
             style={{ paddingLeft: `${depth * 12}px` }}
             onClick={() => setActiveFolderId(folder.id)}
           >
-            <img src="/images/folder.png" alt="" className="docs-folder-icon" />
+            <img src="/images/folder.png" alt="" className="docs-folder-icon docs-folder-icon-folder" />
             <span className="docs-folder-name">{folder.name}</span>
             <button
               type="button"
@@ -222,7 +317,7 @@ export default function DocsPage() {
   return (
     <div className="docs-page">
       <header className="docs-header">
-        <Link to="/" className="docs-logo">
+        <Link to="/?section=desk" className="docs-logo">
           Infinite Monkeys
         </Link>
         <div className="docs-header-main">
@@ -407,6 +502,122 @@ export default function DocsPage() {
             </div>
           </div>
         )}
+
+        {isDeleteContextModalOpen && (
+          <div className="agent-modal-backdrop">
+            <div className="agent-modal">
+              <h2 className="agent-modal-title">Delete Context</h2>
+              <label className="agent-modal-label" htmlFor="delete-context-title">
+                Type the context name to confirm
+              </label>
+              <input
+                id="delete-context-title"
+                type="text"
+                className="agent-modal-input"
+                value={deleteContextTypedTitle}
+                onChange={(e) => setDeleteContextTypedTitle(e.target.value)}
+                autoFocus
+              />
+              <div style={{ marginTop: "0.75rem", fontSize: "0.85rem", color: "#5f6368" }}>
+                Context: <strong>{deleteContextTitle}</strong>
+              </div>
+              <div className="agent-modal-actions">
+                <button
+                  type="button"
+                  className="agent-modal-btn agent-modal-btn-secondary"
+                  onClick={handleCancelDeleteContext}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="agent-modal-btn agent-modal-btn-primary"
+                  onClick={handleConfirmDeleteContext}
+                  disabled={deleteContextTypedTitle.trim() !== deleteContextTitle.trim()}
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {isDeleteAgentModalOpen && (
+          <div className="agent-modal-backdrop">
+            <div className="agent-modal">
+              <h2 className="agent-modal-title">Delete Monkey Agent</h2>
+              <label className="agent-modal-label" htmlFor="delete-agent-title">
+                Type the agent name to confirm
+              </label>
+              <input
+                id="delete-agent-title"
+                type="text"
+                className="agent-modal-input"
+                value={deleteAgentTypedTitle}
+                onChange={(e) => setDeleteAgentTypedTitle(e.target.value)}
+                autoFocus
+              />
+              <div style={{ marginTop: "0.75rem", fontSize: "0.85rem", color: "#5f6368" }}>
+                Agent: <strong>{deleteAgentTitle}</strong>
+              </div>
+              <div className="agent-modal-actions">
+                <button
+                  type="button"
+                  className="agent-modal-btn agent-modal-btn-secondary"
+                  onClick={handleCancelDeleteAgent}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="agent-modal-btn agent-modal-btn-primary"
+                  onClick={handleConfirmDeleteAgent}
+                  disabled={deleteAgentTypedTitle.trim() !== deleteAgentTitle.trim()}
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {isDeleteFolderModalOpen && (
+          <div className="agent-modal-backdrop">
+            <div className="agent-modal">
+              <h2 className="agent-modal-title">Delete Folder</h2>
+              <label className="agent-modal-label" htmlFor="delete-folder-title">
+                Type folder name to confirm deletion:
+              </label>
+              <p className="agent-delete-warning">
+                This will delete the folder and all documents inside it.
+              </p>
+              <input
+                id="delete-folder-title"
+                className="agent-modal-input"
+                value={deleteFolderTypedTitle}
+                onChange={(e) => setDeleteFolderTypedTitle(e.target.value)}
+                placeholder={deleteFolderTitle}
+                autoFocus
+              />
+              <div className="agent-modal-actions">
+                <button
+                  type="button"
+                  className="agent-modal-btn agent-modal-btn-secondary"
+                  onClick={handleCancelDeleteFolder}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="agent-modal-btn agent-modal-btn-primary"
+                  onClick={handleConfirmDeleteFolder}
+                  disabled={deleteFolderTypedTitle.trim() !== deleteFolderTitle.trim()}
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         <aside className="docs-sidebar">
           {activeDrive === "documents" && (
             <>
@@ -435,7 +646,7 @@ export default function DocsPage() {
                   }
                   onClick={() => setActiveFolderId(null)}
                 >
-                  <img src="/images/root.png" alt="" className="docs-folder-icon" />
+                  <img src="/images/root.png" alt="" className="docs-folder-icon docs-folder-icon-root" />
                   <span className="docs-folder-name">Root</span>
                 </div>
                 {renderFolderTree(null)}
@@ -473,24 +684,32 @@ export default function DocsPage() {
             </>
           )}
         </aside>
-        <section className="docs-list-section">
+        <section className={`docs-list-section docs-list-section--${activeDrive}`}>
           {activeDrive === "documents" && (
-            <div className="docs-list">
+            <div className="docs-documents-drive">
+              <div className="docs-drive-toolbar">
+                <input
+                  type="search"
+                  className="docs-drive-search"
+                  placeholder="Search documents…"
+                  value={docSearch}
+                  onChange={(e) => setDocSearch(e.target.value)}
+                />
+              </div>
+              <div className="docs-list">
               {docsLoading ? (
                 <div className="docs-empty">
                   <p>Loading documents…</p>
                 </div>
-              ) : docs.filter((d) => (d.folderId ?? null) === activeFolderId).length === 0 ? (
+              ) : filteredDocs.length === 0 ? (
                 <div className="docs-empty">
-                  <p>No documents yet in this folder.</p>
+                  <p>No documents match this folder/search.</p>
                   <button type="button" className="docs-new-btn-inline" onClick={handleNewDoc}>
                     Create a document
                   </button>
                 </div>
               ) : (
-                docs
-                  .filter((doc) => (doc.folderId ?? null) === activeFolderId)
-                  .map((doc) => (
+                filteredDocs.map((doc) => (
                     <article
                       key={doc.id}
                       className="docs-card"
@@ -512,10 +731,13 @@ export default function DocsPage() {
                           <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z" />
                         </svg>
                       </div>
-                      <span className="docs-card-title">{doc.title}</span>
+                      <span className="docs-card-title">
+                        {truncateDisplayName(doc.title)}
+                      </span>
                     </article>
                   ))
               )}
+              </div>
             </div>
           )}
           {activeDrive === "context" && (
@@ -549,13 +771,15 @@ export default function DocsPage() {
                       onClick={() => navigate(`/context/${ctx.id}`)}
                     >
                       <header className="docs-context-header">
-                        <h3 className="docs-context-title">{ctx.title}</h3>
+                        <h3 className="docs-context-title">
+                          {truncateDisplayName(ctx.title)}
+                        </h3>
                         <button
                           type="button"
                           className="docs-context-delete"
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleContextDelete(ctx.id);
+                            handleContextDelete(ctx.id, ctx.title);
                           }}
                           aria-label="Delete context"
                         >
@@ -579,20 +803,35 @@ export default function DocsPage() {
           )}
           {activeDrive === "agents" && (
             <div className="docs-agents-drive">
-              {agents.length === 0 ? (
+              <div className="docs-drive-toolbar">
+                <input
+                  type="search"
+                  className="docs-drive-search"
+                  placeholder="Search monkey agents…"
+                  value={agentSearch}
+                  onChange={(e) => setAgentSearch(e.target.value)}
+                />
+              </div>
+              {filteredAgents.length === 0 ? (
                 <div className="docs-empty">
-                  <p>No agents yet.</p>
-                  <button
-                    type="button"
-                    className="docs-new-btn-inline"
-                    onClick={handleNewAgent}
-                  >
-                    Create your first monkey agent
-                  </button>
+                  <p>
+                    {agentSearch.trim()
+                      ? "No monkey agents match this search."
+                      : "No agents yet."}
+                  </p>
+                  {!agentSearch.trim() && (
+                    <button
+                      type="button"
+                      className="docs-new-btn-inline"
+                      onClick={handleNewAgent}
+                    >
+                      Create your first monkey agent
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className="docs-agents-grid">
-                  {agents.map((agent) => (
+                  {filteredAgents.map((agent) => (
                     <article
                       key={agent.id}
                       className="docs-agent-card"
@@ -603,7 +842,9 @@ export default function DocsPage() {
                           <img src="/images/monkey%20(1).png" alt="Monkey" className="docs-agent-avatar-img" />
                         </div>
                         <div className="docs-agent-meta">
-                          <h3 className="docs-agent-name">{agent.name}</h3>
+                          <h3 className="docs-agent-name">
+                            {truncateDisplayName(agent.name)}
+                          </h3>
                           <div className="docs-agent-role">{agent.role}</div>
                         </div>
                         <button
@@ -611,7 +852,7 @@ export default function DocsPage() {
                           className="docs-agent-delete"
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleAgentDelete(agent.id);
+                            handleAgentDelete(agent.id, agent.name);
                           }}
                           aria-label="Delete agent"
                         >

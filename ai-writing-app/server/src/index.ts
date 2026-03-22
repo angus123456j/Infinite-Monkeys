@@ -4,6 +4,7 @@ import rateLimit from "express-rate-limit";
 import cors from "cors";
 import dotenv from "dotenv";
 import { prisma } from "./db.js";
+import { seedAgentsFromMarkdown } from "./agents/seedAgentsFromMarkdown.js";
 
 // Load environment variables from .env file
 dotenv.config();
@@ -39,6 +40,19 @@ app.use(
 );
 
 app.use(express.json());
+
+// Seed/Sync monkey agents from markdown templates (and remove placeholders)
+seedAgentsFromMarkdown(prisma)
+  .then((r) => {
+    if (r.created || r.updated || r.deletedPlaceholders) {
+      console.log(
+        `[agents] synced from markdown: created=${r.created} updated=${r.updated} deletedPlaceholders=${r.deletedPlaceholders} skipped=${r.skipped}`
+      );
+    }
+  })
+  .catch((err) => {
+    console.error("[agents] failed to sync from markdown:", err);
+  });
 
 // Rate limiting middleware
 const limiter = rateLimit({
@@ -119,7 +133,8 @@ app.post(
 
 app.get("/api/documents/:id", async (req: Request, res: Response) => {
   try {
-    const doc = await prisma.document.findUnique({ where: { id: req.params.id } });
+    const id = String(req.params.id);
+    const doc = await prisma.document.findUnique({ where: { id } });
     if (!doc) return res.status(404).json({ error: "Document not found" });
     res.json(doc);
   } catch (error: any) {
@@ -130,13 +145,14 @@ app.get("/api/documents/:id", async (req: Request, res: Response) => {
 
 app.patch("/api/documents/:id", async (req: Request, res: Response) => {
   try {
+    const id = String(req.params.id);
     const { title, content, folderId } = req.body;
     const data: { title?: string; content?: string; folderId?: string | null } = {};
     if (title !== undefined) data.title = String(title);
     if (content !== undefined) data.content = String(content);
     if (folderId !== undefined) data.folderId = folderId == null || folderId === "" ? null : String(folderId);
     const doc = await prisma.document.update({
-      where: { id: req.params.id },
+      where: { id },
       data,
     });
     res.json(doc);
@@ -149,7 +165,8 @@ app.patch("/api/documents/:id", async (req: Request, res: Response) => {
 
 app.delete("/api/documents/:id", async (req: Request, res: Response) => {
   try {
-    await prisma.document.delete({ where: { id: req.params.id } });
+    const id = String(req.params.id);
+    await prisma.document.delete({ where: { id } });
     res.status(204).send();
   } catch (error: any) {
     if (error?.code === "P2025") return res.status(404).json({ error: "Document not found" });
@@ -198,7 +215,8 @@ app.post(
 
 app.get("/api/contexts/:id", async (req: Request, res: Response) => {
   try {
-    const item = await prisma.context.findUnique({ where: { id: req.params.id } });
+    const id = String(req.params.id);
+    const item = await prisma.context.findUnique({ where: { id } });
     if (!item) return res.status(404).json({ error: "Context not found" });
     res.json(item);
   } catch (error: any) {
@@ -209,14 +227,15 @@ app.get("/api/contexts/:id", async (req: Request, res: Response) => {
 
 app.patch("/api/contexts/:id", async (req: Request, res: Response) => {
   try {
+    const id = String(req.params.id);
     const { title, description, tags, lastUsedAt } = req.body;
-    const data: { title?: string; description?: string; tags?: unknown; lastUsedAt?: Date | null } = {};
+    const data: Parameters<typeof prisma.context.update>[0]["data"] = {};
     if (title !== undefined) data.title = String(title).trim();
     if (description !== undefined) data.description = String(description);
-    if (tags !== undefined) data.tags = Array.isArray(tags) ? tags : undefined;
+    if (tags !== undefined) data.tags = Array.isArray(tags) ? (tags as any) : undefined;
     if (lastUsedAt !== undefined) data.lastUsedAt = lastUsedAt == null ? null : new Date(lastUsedAt);
     const item = await prisma.context.update({
-      where: { id: req.params.id },
+      where: { id },
       data,
     });
     res.json(item);
@@ -229,7 +248,8 @@ app.patch("/api/contexts/:id", async (req: Request, res: Response) => {
 
 app.delete("/api/contexts/:id", async (req: Request, res: Response) => {
   try {
-    await prisma.context.delete({ where: { id: req.params.id } });
+    const id = String(req.params.id);
+    await prisma.context.delete({ where: { id } });
     res.status(204).send();
   } catch (error: any) {
     if (error?.code === "P2025") return res.status(404).json({ error: "Context not found" });
@@ -289,7 +309,8 @@ app.post(
 
 app.get("/api/agents/:id", async (req: Request, res: Response) => {
   try {
-    const item = await prisma.monkeyAgent.findUnique({ where: { id: req.params.id } });
+    const id = String(req.params.id);
+    const item = await prisma.monkeyAgent.findUnique({ where: { id } });
     if (!item) return res.status(404).json({ error: "Agent not found" });
     res.json(item);
   } catch (error: any) {
@@ -300,6 +321,7 @@ app.get("/api/agents/:id", async (req: Request, res: Response) => {
 
 app.patch("/api/agents/:id", async (req: Request, res: Response) => {
   try {
+    const id = String(req.params.id);
     const { name, role, strengths, avatar, defaultPrompt, identity, behavior, constraints } = req.body;
     const data: Record<string, unknown> = {};
     if (name !== undefined) data.name = String(name).trim();
@@ -311,7 +333,7 @@ app.patch("/api/agents/:id", async (req: Request, res: Response) => {
     if (constraints !== undefined) data.constraints = String(constraints);
     if (defaultPrompt !== undefined) data.defaultPrompt = String(defaultPrompt);
     const item = await prisma.monkeyAgent.update({
-      where: { id: req.params.id },
+      where: { id },
       data: data as Parameters<typeof prisma.monkeyAgent.update>[0]["data"],
     });
     res.json(item);
@@ -324,7 +346,8 @@ app.patch("/api/agents/:id", async (req: Request, res: Response) => {
 
 app.delete("/api/agents/:id", async (req: Request, res: Response) => {
   try {
-    await prisma.monkeyAgent.delete({ where: { id: req.params.id } });
+    const id = String(req.params.id);
+    await prisma.monkeyAgent.delete({ where: { id } });
     res.status(204).send();
   } catch (error: any) {
     if (error?.code === "P2025") return res.status(404).json({ error: "Agent not found" });
@@ -333,6 +356,127 @@ app.delete("/api/agents/:id", async (req: Request, res: Response) => {
   }
 });
 
+// Agent search (semantic ranking)
+app.post(
+  "/api/agents/search",
+  limiter,
+  authMiddleware,
+  async (req: Request, res: Response) => {
+    try {
+      const query = req.body?.query;
+      const topKRaw = req.body?.topK;
+
+      if (!query || typeof query !== "string") {
+        return res.status(400).json({ error: "Missing or invalid 'query' field" });
+      }
+
+      const topK =
+        typeof topKRaw === "number" && Number.isFinite(topKRaw)
+          ? Math.max(1, Math.min(15, Math.floor(topKRaw)))
+          : 8;
+
+      const allAgents = await prisma.monkeyAgent.findMany({
+        select: {
+          id: true,
+          name: true,
+          role: true,
+          strengths: true,
+          identity: true,
+          behavior: true,
+          constraints: true,
+        },
+        orderBy: { updatedAt: "desc" },
+      });
+
+      if (!allAgents.length) {
+        return res.json({ matches: [] as Array<{ id: string; score: number }> });
+      }
+
+      const truncate = (s: string, max: number) =>
+        s && s.length > max ? `${s.slice(0, max)}…` : s;
+
+      // Keep the prompt compact. (If you add many agents later, this will matter.)
+      const agentsForPrompt = allAgents.slice(0, 60).map((a) => ({
+        id: a.id,
+        name: a.name,
+        role: truncate(a.role ?? "", 80),
+        strengths: truncate(a.strengths ?? "", 220),
+        identity: truncate(a.identity ?? "", 220),
+        behavior: truncate(a.behavior ?? "", 220),
+        constraints: truncate(a.constraints ?? "", 220),
+      }));
+
+      const systemInstruction =
+        `You are an agent search engine for a writing application.\n` +
+        `Given a user's description of the kind of monkey they want, you must rank the best matching agents.\n` +
+        `Return ONLY valid JSON in the exact format:\n` +
+        `{\n  "matches": [ { "id": "<agentId>", "score": <number 0..100> }, ... ]\n}\n` +
+        `- score reflects match confidence (higher is better)\n` +
+        `- Include at most ${topK} matches\n` +
+        `- Do not include explanations or any other keys\n` +
+        `- IDs must be from the provided agent list\n`;
+
+      const userPrompt = `User description:\n${query}\n\n` +
+        `Agent profiles (pick the best matches):\n` +
+        `${JSON.stringify(agentsForPrompt)}\n\n` +
+        `Rank the agents that best match the user's description.`;
+
+      const model = genAI.getGenerativeModel({
+        model: "gemini-2.5-flash",
+        systemInstruction,
+      });
+
+      const result = await model.generateContent(userPrompt);
+      const response = result.response;
+      const text = response.text();
+
+      // Try to parse JSON even if the model adds stray text.
+      const jsonCandidate = text.match(/\{[\s\S]*\}/)?.[0];
+      if (jsonCandidate) {
+        const parsed = JSON.parse(jsonCandidate) as {
+          matches?: Array<{ id: string; score: number }>;
+        };
+        const matches = parsed.matches ?? [];
+        const validIds = new Set(allAgents.map((a) => a.id));
+
+        const cleaned = matches
+          .filter((m) => m && typeof m.id === "string" && typeof m.score === "number")
+          .filter((m) => validIds.has(m.id))
+          .sort((a, b) => b.score - a.score)
+          .slice(0, topK);
+
+        return res.json({ matches: cleaned });
+      }
+
+      // Fallback: lightweight token scoring (prevents empty results if JSON parsing fails)
+      const tokens = query
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 10);
+
+      const scored = allAgents
+        .map((a) => {
+          const blob = `${a.name} ${a.role} ${a.strengths} ${a.identity} ${a.behavior} ${a.constraints}`.toLowerCase();
+          let score = 0;
+          for (const t of tokens) {
+            if (!t) continue;
+            if (blob.includes(t)) score += Math.min(20, 2 + t.length);
+          }
+          return { id: a.id, score };
+        })
+        .filter((x) => x.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, topK);
+
+      return res.json({ matches: scored });
+    } catch (error: any) {
+      console.error("Error searching agents:", error);
+      return res.status(500).json({ error: "Failed to search agents" });
+    }
+  }
+);
+
 // Rewrite endpoint
 app.post(
   "/api/rewrite",
@@ -340,7 +484,7 @@ app.post(
   authMiddleware,
   async (req: Request, res: Response) => {
     try {
-      const { text, prompt } = req.body;
+      const { text, prompt, agentId, contextId, contextIds, sentenceContext } = req.body;
 
       // Validate request body
       if (!text || typeof text !== "string") {
@@ -355,20 +499,123 @@ app.post(
         });
       }
 
-      // Call Google Gemini API
-      // Using gemini-2.5-flash (confirmed working model)
-      const model = genAI.getGenerativeModel({ 
-        model: "gemini-2.5-flash",
-        systemInstruction: `You are a helpful writing assistant. Rewrite the provided text according to the user's instructions. 
+      let loadedAgent: Awaited<
+        ReturnType<typeof prisma.monkeyAgent.findUnique>
+      > = null;
+      if (agentId && typeof agentId === "string") {
+        loadedAgent = await prisma.monkeyAgent.findUnique({ where: { id: agentId } });
+      }
+
+      const isSynonymSpecialist =
+        !!loadedAgent &&
+        typeof loadedAgent.name === "string" &&
+        (() => {
+          const n = loadedAgent.name.toLowerCase();
+          return n.includes("synonym sensei") || n.includes("synonym monkey");
+        })();
+
+      const sentenceCtx =
+        typeof sentenceContext === "string" && sentenceContext.trim()
+          ? sentenceContext.trim()
+          : "";
+
+      const useSentenceSynonymMode = isSynonymSpecialist && sentenceCtx.length > 0;
+
+      // Build system instruction — inject agent personality when provided
+      let systemInstruction = `You are a helpful writing assistant. Rewrite the provided text according to the user's instructions. 
 Return only the rewritten text, without explanations or meta-commentary. 
-Preserve the meaning and intent while improving clarity, style, or following the specific instructions given.`
+Preserve the meaning and intent while improving clarity, style, or following the specific instructions given.`;
+
+      if (loadedAgent) {
+        const parts = [
+          `You are "${loadedAgent.name}", a specialist monkey writing agent.`,
+          loadedAgent.identity ? `Identity: ${loadedAgent.identity}` : "",
+          loadedAgent.role ? `Role: ${loadedAgent.role}` : "",
+          loadedAgent.behavior ? `Behavior: ${loadedAgent.behavior}` : "",
+          loadedAgent.constraints ? `Constraints: ${loadedAgent.constraints}` : "",
+          loadedAgent.strengths ? `Strengths: ${loadedAgent.strengths}` : "",
+          "",
+          "Rewrite the provided text according to the user's instructions.",
+          "Return only the rewritten text, without explanations or meta-commentary.",
+        ];
+        if (useSentenceSynonymMode) {
+          parts.push(
+            "",
+            "The user message includes a full sentence and a phrase that occurs inside that sentence. The phrase must be replaced using the meaning the phrase has IN THAT SENTENCE. For homonyms (e.g. draft as air current vs document, bank as river vs money), you must use neighboring words to choose the correct sense—never substitute using a different sense. Output ONLY the replacement words that could drop into the same grammatical slot—never a definition, title, gloss, or meta phrase like 'preliminary version' unless it truly fits the slot."
+          );
+        }
+        systemInstruction = parts.filter(Boolean).join("\n");
+      }
+
+      const model = genAI.getGenerativeModel({
+        model: "gemini-2.5-flash",
+        systemInstruction,
       });
 
-      const userPrompt = `Text to rewrite:\n\n${text}\n\nUser instruction: ${prompt}\n\nPlease rewrite the text according to the instruction.`;
+      // Context documents: support both `contextId` (legacy) and `contextIds` (multi-select).
+      const contextIdsArr: string[] = [];
+      if (Array.isArray(contextIds)) {
+        for (const v of contextIds) {
+          if (typeof v === "string" && v.trim()) contextIdsArr.push(v);
+        }
+      } else if (typeof contextId === "string" && contextId.trim()) {
+        contextIdsArr.push(contextId.trim());
+      }
+
+      const uniqueContextIds = Array.from(new Set(contextIdsArr)).slice(0, 5);
+
+      let contextBlock = "";
+      if (uniqueContextIds.length) {
+        try {
+          const ctxs = await prisma.context.findMany({
+            where: { id: { in: uniqueContextIds } },
+          });
+
+          const byId = new Map(ctxs.map((c) => [c.id, c]));
+
+          const ordered = uniqueContextIds
+            .map((id) => byId.get(id))
+            .filter((x): x is (typeof ctxs)[number] => !!x);
+
+          if (ordered.length) {
+            contextBlock = `\n\nContext documents:\n${ordered
+              .map((ctx, idx) => {
+                const tagsArr = Array.isArray(ctx.tags) ? (ctx.tags as unknown[]) : [];
+                const tagsStr =
+                  tagsArr.length && tagsArr.every((t) => typeof t === "string")
+                    ? `Tags: ${(tagsArr as string[]).join(", ")}`
+                    : "";
+
+                const pieces = [
+                  `Context document ${idx + 1}:`,
+                  ctx.title ? `Title: ${ctx.title}` : "",
+                  ctx.description ? `Description: ${ctx.description}` : "",
+                  tagsStr,
+                ].filter(Boolean);
+
+                return pieces.join("\n");
+              })
+              .join("\n\n")}`;
+          }
+        } catch (err) {
+          console.error("Failed to load contexts for rewrite:", err);
+        }
+      }
+
+      const userPrompt = useSentenceSynonymMode
+        ? `The phrase to replace appears inside the following sentence (treat the sentence as ground truth for word sense):\n\n"${sentenceCtx}"\n\nExact phrase to replace (substring of that sentence):\n\n${text}${contextBlock}\n\nUser instruction: ${prompt}\n\nReply with ONLY the substitute phrase—plain words, no quotes or asterisks, not the full sentence.`
+        : `Text to rewrite:\n\n${text}\n${contextBlock}\n\nUser instruction: ${prompt}\n\nPlease rewrite the text according to the instruction.`;
 
       const result = await model.generateContent(userPrompt);
       const response = result.response;
-      const rewrite = response.text();
+      let rewrite = response.text();
+      if (useSentenceSynonymMode && typeof rewrite === "string") {
+        rewrite = rewrite
+          .trim()
+          .replace(/^\*+|\*+$/g, "")
+          .replace(/^["'`]+|["'`]+$/g, "")
+          .trim();
+      }
 
       // Return the rewrite
       res.json({

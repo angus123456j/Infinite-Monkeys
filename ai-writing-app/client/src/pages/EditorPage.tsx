@@ -2,15 +2,24 @@ import { useEffect, useState, useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
 import Editor from "../components/Editor";
 import MonkeyScene from "../components/MonkeyScene";
+import DocMenuBar, { type WritingEffectId } from "../components/DocMenuBar";
+import FindReplaceModal from "../components/FindReplaceModal";
+import WordCountModal from "../components/WordCountModal";
+import KeyboardShortcutsModal from "../components/KeyboardShortcutsModal";
+import EditorContext from "../contexts/EditorContext";
 import { getDocument, updateDocTitle, saveDoc } from "../lib/docs";
-
-const MENU_ITEMS = ["File", "Edit", "View", "Insert", "Format", "Tools", "Extensions", "Help"];
+import type { Editor as TiptapEditor } from "@tiptap/react";
 
 export default function EditorPage() {
   const { id } = useParams<{ id: string }>();
+  const [editor, setEditor] = useState<TiptapEditor | null>(null);
   const [title, setTitle] = useState("Untitled document");
   const [initialContent, setInitialContent] = useState<string>("<p></p>");
   const [loading, setLoading] = useState(!!id);
+  const [findReplaceOpen, setFindReplaceOpen] = useState(false);
+  const [wordCountOpen, setWordCountOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [writingEffect, setWritingEffect] = useState<WritingEffectId>("none");
 
   useEffect(() => {
     if (!id) {
@@ -66,33 +75,48 @@ export default function EditorPage() {
   }
 
   return (
-    <div className="app">
-      <div className="app-top-bar" aria-hidden="true">
-        <MonkeyScene />
-      </div>
-      <div className="title-bar">
-        <Link to="/docs" className="doc-icon-link" title="Back to documents">
-          <svg className="doc-icon" width="24" height="30" viewBox="0 0 24 24" fill="#4285f4">
-            <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z" />
-          </svg>
-        </Link>
-        <div className="title-area">
-          <input
-            className="doc-title"
-            value={title}
-            onChange={handleTitleChange}
-            aria-label="Document title"
-          />
-          <div className="menu-bar">
-            {MENU_ITEMS.map((item) => (
-              <span key={item} className="menu-item">
-                {item}
-              </span>
-            ))}
+    <EditorContext.Provider value={editor}>
+      <div className="app">
+        <div className="app-top-bar" aria-hidden="true">
+          <MonkeyScene />
+        </div>
+        <div className="title-bar">
+          <Link to="/docs" className="doc-icon-link" title="Back to documents">
+            <svg className="doc-icon" width="24" height="30" viewBox="0 0 24 24" fill="#4285f4">
+              <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z" />
+            </svg>
+          </Link>
+          <div className="title-area">
+            <input
+              className="doc-title"
+              value={title}
+              onChange={handleTitleChange}
+              aria-label="Document title"
+            />
+            <DocMenuBar
+              onOpenFindReplace={() => setFindReplaceOpen(true)}
+              onOpenWordCount={() => setWordCountOpen(true)}
+              onOpenKeyboardShortcuts={() => setShortcutsOpen(true)}
+              onSelectWritingEffect={setWritingEffect}
+            />
           </div>
         </div>
+        <Editor
+          key={id}
+          docId={id ?? undefined}
+          initialContent={initialContent}
+          onSaveContent={handleSaveContent}
+          onEditorReady={setEditor}
+          writingEffect={writingEffect}
+        />
       </div>
-      <Editor key={id} docId={id ?? undefined} initialContent={initialContent} onSaveContent={handleSaveContent} />
-    </div>
+      {findReplaceOpen && (
+        <FindReplaceModal editor={editor} onClose={() => setFindReplaceOpen(false)} />
+      )}
+      {wordCountOpen && (
+        <WordCountModal editor={editor} onClose={() => setWordCountOpen(false)} />
+      )}
+      {shortcutsOpen && <KeyboardShortcutsModal onClose={() => setShortcutsOpen(false)} />}
+    </EditorContext.Provider>
   );
 }

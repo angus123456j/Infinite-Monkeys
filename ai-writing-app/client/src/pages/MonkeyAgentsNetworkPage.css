@@ -29,21 +29,64 @@
 }
 
 .network-reset-btn {
-  margin-top: 0.6rem;
-  padding: 0.4rem 0.85rem;
+  margin-top: 0;
+  padding: 0 0.9rem;
+  height: 40px;
+  min-width: 160px;
   font-family: "Cinzel", "Times New Roman", serif;
   font-size: 0.78rem;
   font-weight: 600;
   color: #1b3a5c;
-  background: rgba(248, 246, 241, 0.75);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(201, 168, 76, 0.4);
-  border-radius: 8px;
+  background: linear-gradient(
+    180deg,
+    rgba(248, 246, 241, 0.95),
+    rgba(248, 246, 241, 0.75)
+  );
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1.5px solid rgba(201, 168, 76, 0.55);
+  border-radius: 0px;
   cursor: pointer;
   pointer-events: auto;
   letter-spacing: 0.04em;
   transition: background 0.2s, border-color 0.2s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 20px rgba(27, 58, 92, 0.08);
+}
+
+.network-back-btn {
+  padding: 0 0.9rem;
+  height: 40px;
+  min-width: 160px;
+  font-family: "Cinzel", "Times New Roman", serif;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #1b3a5c;
+  background: linear-gradient(
+    180deg,
+    rgba(248, 246, 241, 0.95),
+    rgba(248, 246, 241, 0.75)
+  );
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1.5px solid rgba(201, 168, 76, 0.55);
+  border-radius: 0px;
+  cursor: pointer;
+  pointer-events: auto;
+  letter-spacing: 0.04em;
+  transition: background 0.2s, border-color 0.2s;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 20px rgba(27, 58, 92, 0.08);
+}
+
+.network-back-btn:hover {
+  background: rgba(248, 246, 241, 0.95);
+  border-color: rgba(201, 168, 76, 0.7);
 }
 
 .network-reset-btn:hover {
@@ -57,6 +100,54 @@
   width: 100%;
   height: 100%;
   z-index: 0;
+}
+
+.network-search-panel {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 30;
+  pointer-events: auto;
+  width: 320px;
+  max-width: calc(100vw - 2rem);
+  padding: 0.9rem 1rem;
+  background: rgba(248, 246, 241, 0.88);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(201, 168, 76, 0.35);
+  border-radius: 14px;
+  box-shadow: 0 8px 40px rgba(27, 58, 92, 0.12);
+}
+
+.network-search-label {
+  display: block;
+  font-family: "Cinzel", "Times New Roman", serif;
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #1b3a5c;
+  letter-spacing: 0.03em;
+  margin-bottom: 0.4rem;
+}
+
+.network-search-input {
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid rgba(201, 168, 76, 0.45);
+  background: rgba(255, 255, 255, 0.7);
+  font-size: 0.9rem;
+  outline: none;
+}
+
+.network-search-input:focus {
+  border-color: rgba(26, 115, 232, 0.6);
+  box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.18);
+}
+
+.network-search-meta {
+  margin-top: 0.45rem;
+  font-size: 0.8rem;
+  color: #8b7235;
 }
 
 /* Right-side translucent overlay panel */
