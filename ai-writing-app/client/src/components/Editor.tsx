@@ -1,6 +1,13 @@
 import { useEditor, EditorContent } from "@tiptap/react";
 import type { Editor as TiptapEditor } from "@tiptap/react";
-import { useRef, useState, useEffect, useCallback, MouseEvent } from "react";
+import {
+  useRef,
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useCallback,
+  MouseEvent,
+} from "react";
 import StarterKit from "@tiptap/starter-kit";
 import Underline from "@tiptap/extension-underline";
 import { TextStyle } from "@tiptap/extension-text-style";
@@ -10,9 +17,13 @@ import FontFamily from "@tiptap/extension-font-family";
 import { FontSize } from "../extensions/FontSize";
 import Toolbar from "./Toolbar";
 import Overlay from "./Overlay";
+import AgentInvocationTimeline, {
+  type AgentInvocationLogEntry,
+} from "./AgentInvocationTimeline";
 import type { WritingEffectId } from "./DocMenuBar";
 import { joinForward } from "@tiptap/pm/commands";
 import { getAgent } from "../lib/agents";
+import { listContexts } from "../lib/contexts";
 import { extractSentenceContext } from "../lib/extractSentenceContext";
 
 /** Fixed 50 lines per page. Line height in px (11pt × 1.15 ≈ 17). */
@@ -172,6 +183,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
 
   const contentRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
+  const editorPageAreaRef = useRef<HTMLDivElement>(null);
   const [pageCount, setPageCount] = useState(1);
   const [containerMinHeight, setContainerMinHeight] = useState(PAGE_HEIGHT);
   const [contentVersion, setContentVersion] = useState(0);
@@ -179,6 +191,43 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
   useEffect(() => {
     if (editor && onEditorReady) onEditorReady(editor);
   }, [editor, onEditorReady]);
+
+  /** Keep fixed Monkey timeline top edge aligned with the document (page) top in the viewport. */
+  const syncAgentTimelineTop = useCallback(() => {
+    const el = pageRef.current;
+    if (!el) return;
+    const top = el.getBoundingClientRect().top;
+    document.documentElement.style.setProperty(
+      "--agent-timeline-top",
+      `${Math.max(6, top)}px`
+    );
+  }, []);
+
+  useLayoutEffect(() => {
+    syncAgentTimelineTop();
+  }, [syncAgentTimelineTop, containerMinHeight, contentVersion]);
+
+  useEffect(() => {
+    syncAgentTimelineTop();
+    const pageArea = editorPageAreaRef.current;
+    const onMove = () => syncAgentTimelineTop();
+    window.addEventListener("resize", onMove);
+    window.addEventListener("scroll", onMove, true);
+    pageArea?.addEventListener("scroll", onMove, { passive: true });
+    const pageEl = pageRef.current;
+    const ro =
+      pageEl &&
+      new ResizeObserver(() => {
+        syncAgentTimelineTop();
+      });
+    if (pageEl && ro) ro.observe(pageEl);
+    return () => {
+      window.removeEventListener("resize", onMove);
+      window.removeEventListener("scroll", onMove, true);
+      pageArea?.removeEventListener("scroll", onMove);
+      ro?.disconnect();
+    };
+  }, [syncAgentTimelineTop, editor, containerMinHeight, contentVersion]);
 
   // Overlay state
   const [isOverlayOpen, setIsOverlayOpen] = useState(false);
@@ -189,6 +238,9 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
   const [prompt, setPrompt] = useState("");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [selectedContextIds, setSelectedContextIds] = useState<string[]>([]);
+  const [invocationLog, setInvocationLog] = useState<AgentInvocationLogEntry[]>(
+    []
+  );
 
   // Multiple inline suggestions state
   const [pendingRewrites, setPendingRewrites] = useState<PendingRewrite[]>([]);
@@ -791,19 +843,52 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
 
     // Call API in background
     try {
+      const agentMeta = currentAgentId ? await getAgent(currentAgentId) : null;
+      const agentName =
+        agentMeta?.name ?? (currentAgentId ? "Unknown agent" : "No agent");
+
+      let contextLabels: string[] = [];
+      try {
+        const allCtx = await listContexts();
+        contextLabels = currentContextIds.map(
+          (cid) => allCtx.find((c) => c.id === cid)?.title ?? cid
+        );
+      } catch {
+        contextLabels = currentContextIds.slice();
+      }
+
       let sentenceContext: string | undefined;
       let promptForApi = currentPrompt;
-      if (currentAgentId && sentenceForSynonym) {
-        const agent = await getAgent(currentAgentId);
-        if (agent && isSynonymSpecialistAgentName(agent.name)) {
-          sentenceContext = sentenceForSynonym;
-          const synonymCore =
-            "The phrase appears inside the sentence above. Pick one substitute that fits that exact meaning and grammar. For ambiguous words (e.g. draft, bank, bark), use only the sense supported by the surrounding words—never a different meaning. Return only the replacement phrase, same part of speech as the original where possible—no titles, glosses, or explanations.";
-          promptForApi = trimmedPrompt
-            ? `${trimmedPrompt}\n\n${synonymCore}`
-            : synonymCore;
-        }
+      if (
+        currentAgentId &&
+        sentenceForSynonym &&
+        agentMeta &&
+        isSynonymSpecialistAgentName(agentMeta.name)
+      ) {
+        sentenceContext = sentenceForSynonym;
+        const synonymCore =
+          "The phrase appears inside the sentence above. Pick one substitute that fits that exact meaning and grammar. For ambiguous words (e.g. draft, bank, bark), use only the sense supported by the surrounding words—never a different meaning. Return only the replacement phrase, same part of speech as the original where possible—no titles, glosses, or explanations.";
+        promptForApi = trimmedPrompt
+          ? `${trimmedPrompt}\n\n${synonymCore}`
+          : synonymCore;
       }
+
+      setInvocationLog((prev) => [
+        ...prev,
+        {
+          id,
+          at: Date.now(),
+          agentId: currentAgentId,
+          agentName,
+          contextLabels,
+          userPrompt: trimmedPrompt,
+          apiPromptSent: promptForApi,
+          originalText: selectedText,
+          response: null,
+          error: null,
+          status: "loading",
+        },
+      ]);
 
       const result = await fetchRewrite(
         selectedText,
@@ -824,13 +909,21 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
           ? { ...rw, rewriteText: result, isLoading: false, isRevealing: true }
           : rw
       );
+      setInvocationLog((prev) =>
+        prev.map((entry) =>
+          entry.id === id
+            ? { ...entry, status: "done" as const, response: result }
+            : entry
+        )
+      );
     } catch (err: any) {
+      const msg = err.message || "Failed to generate rewrite";
       setPendingRewrites((prev) =>
         prev.map((rw) =>
           rw.id === id
             ? {
                 ...rw,
-                error: err.message || "Failed to generate rewrite",
+                error: msg,
                 isLoading: false,
               }
             : rw
@@ -840,11 +933,19 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
         rw.id === id
           ? {
               ...rw,
-              error: err.message || "Failed to generate rewrite",
+              error: msg,
               isLoading: false,
             }
           : rw
       );
+      setInvocationLog((prev) => {
+        if (!prev.some((e) => e.id === id)) return prev;
+        return prev.map((entry) =>
+          entry.id === id
+            ? { ...entry, status: "error" as const, error: msg }
+            : entry
+        );
+      });
     }
   }, [prompt, editor, storedSelection, selectedAgentId, selectedContextIds, fetchRewrite]);
 
@@ -946,7 +1047,8 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
   return (
     <>
       <Toolbar editor={editor} />
-      <div className="editor-page-area">
+      <div className="editor-page-area" ref={editorPageAreaRef}>
+        <div className="editor-document-center">
         <div
           className="writing-effect-wrapper"
           data-writing-effect={writingEffect ?? "none"}
@@ -1062,6 +1164,8 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
           })}
         </div>
         </div>
+        </div>
+        <AgentInvocationTimeline entries={invocationLog} />
       </div>
       <Overlay
         isOpen={isOverlayOpen}
