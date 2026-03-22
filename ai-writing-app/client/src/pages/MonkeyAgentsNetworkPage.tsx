@@ -1,9 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import NeuralNetworkScene, { type NeuralNode } from "../components/NeuralNetworkScene";
-import type { NeuralNetworkSceneHandle } from "../components/NeuralNetworkScene";
+import NeuralNetworkScene, {
+  CLUSTER_SPHERE_COLORS,
+  type NeuralNetworkSceneHandle,
+  type NeuralNode,
+} from "../components/NeuralNetworkScene";
+import { agentsToFeatureMatrix } from "../lib/agentSemanticEmbedding";
+import { layoutClusteredNodes } from "../lib/clusterLayout";
+import { kMeans } from "../lib/kmeans";
 import { listAgents, searchAgents, type AgentMeta } from "../lib/agents";
 import "./MonkeyAgentsNetworkPage.css";
+
+/** Fixed server-side–style K: not exposed in UI. */
+function automaticClusterCount(agentCount: number): number {
+  if (agentCount < 2) return 2;
+  return Math.min(8, Math.max(2, Math.round(Math.sqrt(agentCount))));
+}
 
 export default function MonkeyAgentsNetworkPage() {
   const [agents, setAgents] = useState<AgentMeta[]>([]);
@@ -39,10 +51,44 @@ export default function MonkeyAgentsNetworkPage() {
     };
   }, []);
 
-  const nodes = useMemo<NeuralNode[]>(
-    () => agents.map((a) => ({ id: a.id, name: a.name })),
-    [agents]
-  );
+  const clustered = useMemo(() => {
+    if (agents.length < 2) return null;
+    const k = Math.min(automaticClusterCount(agents.length), agents.length);
+    const matrix = agentsToFeatureMatrix(agents);
+    const { assignments } = kMeans(matrix, k, { seed: 42, maxIter: 100 });
+    const positions = layoutClusteredNodes(assignments, k);
+    const neuralNodes: NeuralNode[] = agents.map((a, i) => ({
+      id: a.id,
+      name: a.name,
+      clusterId: assignments[i],
+    }));
+    return { assignments, positions, neuralNodes };
+  }, [agents]);
+
+  const nodes = useMemo<NeuralNode[]>(() => {
+    if (clustered) return clustered.neuralNodes;
+    return agents.map((a) => ({ id: a.id, name: a.name }));
+  }, [agents, clustered]);
+
+  const clusterPositions = clustered?.positions;
+  const edgeMode = clustered ? "cluster" : "global";
+
+  const clusterLegend = useMemo(() => {
+    if (!clustered) return [];
+    const byCluster = new Map<number, string[]>();
+    agents.forEach((a, i) => {
+      const c = clustered.assignments[i] ?? 0;
+      const list = byCluster.get(c) ?? [];
+      list.push(a.name);
+      byCluster.set(c, list);
+    });
+    return [...byCluster.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([id, names]) => ({
+        id,
+        preview: names.slice(0, 4).join(", ") + (names.length > 4 ? "…" : ""),
+      }));
+  }, [agents, clustered]);
 
   const hoveredAgent = useMemo(
     () => (hoveredId ? agents.find((a) => a.id === hoveredId) ?? null : null),
@@ -112,6 +158,8 @@ export default function MonkeyAgentsNetworkPage() {
       <NeuralNetworkScene
         ref={sceneRef}
         nodes={nodes}
+        positions={clusterPositions}
+        edgeMode={edgeMode}
         onHoverNode={setHoveredId}
         highlightNodeIds={highlightNodeIds}
       />
@@ -156,6 +204,30 @@ export default function MonkeyAgentsNetworkPage() {
               .filter(Boolean)
               .join("\n")}
           </p>
+        </aside>
+      )}
+
+      {clusterLegend.length > 0 && (
+        <aside className="network-cluster-legend" aria-label="Cluster legend">
+          <div className="network-cluster-legend-title">Clusters</div>
+          <ul className="network-cluster-legend-list">
+            {clusterLegend.map((row) => (
+              <li key={row.id} className="network-cluster-legend-item">
+                <span
+                  className="network-cluster-swatch"
+                  style={{
+                    background: `#${CLUSTER_SPHERE_COLORS[row.id % CLUSTER_SPHERE_COLORS.length]!
+                      .toString(16)
+                      .padStart(6, "0")}`,
+                  }}
+                />
+                <span className="network-cluster-legend-text">
+                  <strong>Group {row.id + 1}</strong>
+                  <span className="network-cluster-legend-preview">{row.preview}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
         </aside>
       )}
 

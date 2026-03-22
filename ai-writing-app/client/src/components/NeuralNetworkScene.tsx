@@ -9,6 +9,8 @@ const LABEL_OFFSET_Y = 0.18;
 // Overall network radius. Smaller = nodes cluster closer.
 const SPREAD = 14;
 const EDGE_CONNECTIONS = 3;
+/** Within-cluster neighbors when `edgeMode === "cluster"`. */
+const INTRA_CLUSTER_CONNECTIONS = 2;
 const EDGE_TUBE_RADIUS = 0.005;
 
 // Greek palette
@@ -16,7 +18,12 @@ const AEGEAN_BLUE = 0x1b3a5c;
 const GREEK_GOLD = 0xc9a84c;
 const MARBLE_BG = 0xf8f6f1;
 
-export type NeuralNode = { id: string; name: string };
+export type NeuralNode = {
+  id: string;
+  name: string;
+  /** 0..k-1 when using K-means clustering view */
+  clusterId?: number;
+};
 
 function createLabelSprite(name: string): THREE.Sprite {
   const canvas = document.createElement("canvas");
@@ -54,6 +61,19 @@ function volumeLayout(count: number): THREE.Vector3[] {
   return positions;
 }
 
+function lerpHex(a: number, b: number, t: number): number {
+  const ar = (a >> 16) & 0xff;
+  const ag = (a >> 8) & 0xff;
+  const ab = a & 0xff;
+  const br = (b >> 16) & 0xff;
+  const bg = (b >> 8) & 0xff;
+  const bb = b & 0xff;
+  const r = Math.round(ar + (br - ar) * t);
+  const g = Math.round(ag + (bg - ag) * t);
+  const bl = Math.round(ab + (bb - ab) * t);
+  return (r << 16) | (g << 8) | bl;
+}
+
 function createEdgeTube(from: THREE.Vector3, to: THREE.Vector3, material: THREE.Material): THREE.Mesh {
   const len = from.distanceTo(to);
   const geom = new THREE.CylinderGeometry(EDGE_TUBE_RADIUS, EDGE_TUBE_RADIUS, len, 4, 1);
@@ -69,14 +89,30 @@ export interface NeuralNetworkSceneHandle {
   resetView: () => void;
 }
 
+/** Distinct tints for cluster spheres (Greek / marble palette). Exported for legend UI. */
+export const CLUSTER_SPHERE_COLORS: readonly number[] = [
+  0x1e5794, 0x2e7d4a, 0xc0392b, 0x6c3483, 0x117a8a, 0xb9770e, 0x6d4c41, 0x00838f,
+  0x5b2c6f, 0x7d6608, 0x154360, 0xd35400,
+];
+
 interface NeuralNetworkSceneProps {
   nodes: NeuralNode[];
+  /** When length matches `nodes`, replaces default volume layout (e.g. semantic clusters). */
+  positions?: Array<{ x: number; y: number; z: number }>;
+  /**
+   * `cluster`: k-nearest *within* each cluster, plus ring bridges between adjacent clusters
+   * (closest node pair per bridge) so groups stay visually linked.
+   */
+  edgeMode?: "global" | "cluster";
   onHoverNode: (id: string | null) => void;
   highlightNodeIds?: string[];
 }
 
 const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSceneProps>(
-  function NeuralNetworkScene({ nodes, onHoverNode, highlightNodeIds }, ref) {
+  function NeuralNetworkScene(
+    { nodes, positions: positionsProp, edgeMode = "global", onHoverNode, highlightNodeIds },
+    ref
+  ) {
   const containerRef = useRef<HTMLDivElement>(null);
   const hoveredRef = useRef<string | null>(null);
   const highlightSetRef = useRef<Set<string>>(new Set());
@@ -86,6 +122,7 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
   const defaultMatRef = useRef<THREE.MeshPhysicalMaterial | null>(null);
   const hoverMatRef = useRef<THREE.MeshPhysicalMaterial | null>(null);
   const highlightMatRef = useRef<THREE.MeshPhysicalMaterial | null>(null);
+  const searchGlowMeshesRef = useRef<THREE.Mesh[]>([]);
   const resetRef = useRef<(() => void) | null>(null);
 
   useImperativeHandle(ref, () => ({
@@ -149,9 +186,23 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
     backLight.position.set(0, -6, -10);
     scene.add(backLight);
 
-    const positions = volumeLayout(nodes.length);
+    const positions =
+      positionsProp && positionsProp.length === nodes.length
+        ? positionsProp.map((p) => new THREE.Vector3(p.x, p.y, p.z))
+        : volumeLayout(nodes.length);
 
     const sphereGeom = new THREE.SphereGeometry(SPHERE_RADIUS, 32, 24);
+
+    const clusterMats: THREE.MeshPhysicalMaterial[] = CLUSTER_SPHERE_COLORS.map(
+      (hex) =>
+        new THREE.MeshPhysicalMaterial({
+          color: hex,
+          roughness: 0.2,
+          metalness: 0.28,
+          clearcoat: 0.55,
+          clearcoatRoughness: 0.18,
+        })
+    );
 
     const defaultMat = new THREE.MeshPhysicalMaterial({
       color: AEGEAN_BLUE,
@@ -173,15 +224,16 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
     });
     hoverMatRef.current = hoverMat;
 
-    // Search highlight (blue) for matching nodes
+    // Search match: neon core + additive glow (see `searchGlowMeshesRef`)
+    const NEON_SEARCH = 0xff00e5;
     const highlightMat = new THREE.MeshPhysicalMaterial({
-      color: 0x1a73e8,
-      roughness: 0.18,
-      metalness: 0.35,
-      clearcoat: 0.7,
-      clearcoatRoughness: 0.12,
-      emissive: 0x1a73e8,
-      emissiveIntensity: 0.18,
+      color: NEON_SEARCH,
+      roughness: 0.12,
+      metalness: 0.15,
+      clearcoat: 0.45,
+      clearcoatRoughness: 0.08,
+      emissive: NEON_SEARCH,
+      emissiveIntensity: 2.8,
     });
     highlightMatRef.current = highlightMat;
 
@@ -203,8 +255,14 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
     nodes.forEach((node, i) => {
       const name = node.name;
       const pos = positions[i]!;
+      const cid = node.clusterId;
+      const baseMat =
+        cid != null && clusterMats.length > 0
+          ? clusterMats[cid % clusterMats.length]!
+          : defaultMat;
 
-      const mesh = new THREE.Mesh(sphereGeom, defaultMat);
+      const mesh = new THREE.Mesh(sphereGeom, baseMat);
+      (mesh.userData as { baseMaterial: THREE.MeshPhysicalMaterial }).baseMaterial = baseMat;
       mesh.position.copy(pos);
       scene.add(mesh);
       spheres.push(mesh);
@@ -225,30 +283,148 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
     spheresRef.current = spheres;
     meshToIdRef.current = meshToId;
 
+    const glowGeom = new THREE.SphereGeometry(SPHERE_RADIUS * 1.75, 28, 20);
+    const searchGlowMeshes: THREE.Mesh[] = [];
+    for (let i = 0; i < positions.length; i++) {
+      const gMat = new THREE.MeshBasicMaterial({
+        color: 0x66ffff,
+        transparent: true,
+        opacity: 0,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      const g = new THREE.Mesh(glowGeom, gMat);
+      g.position.copy(positions[i]!);
+      g.renderOrder = 2;
+      scene.add(g);
+      searchGlowMeshes.push(g);
+    }
+    searchGlowMeshesRef.current = searchGlowMeshes;
+
     const edgeMat = new THREE.MeshBasicMaterial({
       color: 0xd4c4a0,
       transparent: true,
       opacity: 0.4,
     });
+
+    const clusterLineMats: THREE.MeshBasicMaterial[] = CLUSTER_SPHERE_COLORS.map(
+      (hex) =>
+        new THREE.MeshBasicMaterial({
+          color: hex,
+          transparent: true,
+          opacity: 0.88,
+        })
+    );
+
+    const bridgeMatCache = new Map<string, THREE.MeshBasicMaterial>();
+    const bridgeMatFor = (c1: number, c2: number): THREE.MeshBasicMaterial => {
+      const a = Math.min(c1, c2);
+      const b = Math.max(c1, c2);
+      const key = `${a}-${b}`;
+      let m = bridgeMatCache.get(key);
+      if (!m) {
+        const L = CLUSTER_SPHERE_COLORS.length;
+        const col = lerpHex(CLUSTER_SPHERE_COLORS[a % L]!, CLUSTER_SPHERE_COLORS[b % L]!, 0.5);
+        m = new THREE.MeshBasicMaterial({
+          color: col,
+          transparent: true,
+          opacity: 0.62,
+        });
+        bridgeMatCache.set(key, m);
+      }
+      return m;
+    };
+
     const edgeMeshes: THREE.Mesh[] = [];
     const seen = new Set<string>();
 
-    for (let i = 0; i < positions.length; i++) {
-      const from = positions[i]!;
-      const distances = positions
-        .map((p, j) => ({ j, d: from.distanceTo(p) }))
-        .filter((x) => x.j !== i)
-        .sort((a, b) => a.d - b.d);
+    const clusterEdgesActive =
+      edgeMode === "cluster" && nodes.some((n) => n.clusterId !== undefined);
 
-      for (let k = 0; k < Math.min(EDGE_CONNECTIONS, distances.length); k++) {
-        const j = distances[k]!.j;
-        const edgeKey = [Math.min(i, j), Math.max(i, j)].join(",");
-        if (seen.has(edgeKey)) continue;
-        seen.add(edgeKey);
-        const to = positions[j]!;
-        const tube = createEdgeTube(from, to, edgeMat);
-        scene.add(tube);
-        edgeMeshes.push(tube);
+    const sameCluster = (i: number, j: number) => {
+      if (!clusterEdgesActive) return true;
+      const a = nodes[i]?.clusterId;
+      const b = nodes[j]?.clusterId;
+      return a !== undefined && b !== undefined && a === b;
+    };
+
+    const addEdge = (i: number, j: number, mat: THREE.MeshBasicMaterial) => {
+      if (i === j) return;
+      const a = Math.min(i, j);
+      const b = Math.max(i, j);
+      const edgeKey = `${a},${b}`;
+      if (seen.has(edgeKey)) return;
+      seen.add(edgeKey);
+      const from = positions[a]!;
+      const to = positions[b]!;
+      const tube = createEdgeTube(from, to, mat);
+      scene.add(tube);
+      edgeMeshes.push(tube);
+    };
+
+    if (clusterEdgesActive) {
+      const intraCap = Math.min(INTRA_CLUSTER_CONNECTIONS, EDGE_CONNECTIONS);
+      for (let i = 0; i < positions.length; i++) {
+        const from = positions[i]!;
+        const distances = positions
+          .map((p, j) => ({ j, d: from.distanceTo(p) }))
+          .filter((x) => x.j !== i)
+          .filter((x) => sameCluster(i, x.j))
+          .sort((a, b) => a.d - b.d);
+
+        const cid = nodes[i]?.clusterId;
+        const lineMat =
+          cid != null ? clusterLineMats[cid % clusterLineMats.length]! : edgeMat;
+
+        for (let k = 0; k < Math.min(intraCap, distances.length); k++) {
+          addEdge(i, distances[k]!.j, lineMat);
+        }
+      }
+
+      const byCluster = new Map<number, number[]>();
+      nodes.forEach((node, i) => {
+        const c = node.clusterId;
+        if (c === undefined) return;
+        const list = byCluster.get(c) ?? [];
+        list.push(i);
+        byCluster.set(c, list);
+      });
+      const distinct = [...byCluster.keys()].sort((a, b) => a - b);
+      if (distinct.length >= 2) {
+        for (let t = 0; t < distinct.length; t++) {
+          const c1 = distinct[t]!;
+          const c2 = distinct[(t + 1) % distinct.length]!;
+          const list1 = byCluster.get(c1)!;
+          const list2 = byCluster.get(c2)!;
+          let bestI = list1[0]!;
+          let bestJ = list2[0]!;
+          let bestD = Infinity;
+          for (const i of list1) {
+            const pi = positions[i]!;
+            for (const j of list2) {
+              const d = pi.distanceTo(positions[j]!);
+              if (d < bestD) {
+                bestD = d;
+                bestI = i;
+                bestJ = j;
+              }
+            }
+          }
+          addEdge(bestI, bestJ, bridgeMatFor(c1, c2));
+        }
+      }
+    } else {
+      for (let i = 0; i < positions.length; i++) {
+        const from = positions[i]!;
+        const distances = positions
+          .map((p, j) => ({ j, d: from.distanceTo(p) }))
+          .filter((x) => x.j !== i)
+          .filter((x) => sameCluster(i, x.j))
+          .sort((a, b) => a.d - b.d);
+
+        for (let k = 0; k < Math.min(EDGE_CONNECTIONS, distances.length); k++) {
+          addEdge(i, distances[k]!.j, edgeMat);
+        }
       }
     }
 
@@ -263,12 +439,19 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
       const hits = raycaster.intersectObjects(spheres, false);
       const hit = hits[0];
 
+      const baseFor = (mesh: THREE.Mesh) => {
+        const ud = mesh.userData as { baseMaterial?: THREE.MeshPhysicalMaterial };
+        return ud.baseMaterial ?? defaultMat;
+      };
+
       if (hit?.object instanceof THREE.Mesh && meshToId.has(hit.object)) {
         if (currentHoveredMeshRef.current !== hit.object) {
           const prev = currentHoveredMeshRef.current;
           if (prev) {
             const prevId = meshToId.get(prev) ?? null;
-            prev.material = highlightSetRef.current.has(prevId ?? "") ? (highlightMatRef.current ?? defaultMat) : defaultMat;
+            prev.material = highlightSetRef.current.has(prevId ?? "")
+              ? (highlightMatRef.current ?? defaultMat)
+              : baseFor(prev);
           }
 
           currentHoveredMeshRef.current = hit.object;
@@ -285,7 +468,9 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
         const prev = currentHoveredMeshRef.current;
         if (prev) {
           const prevId = meshToId.get(prev) ?? null;
-          prev.material = highlightSetRef.current.has(prevId ?? "") ? (highlightMatRef.current ?? defaultMat) : defaultMat;
+          prev.material = highlightSetRef.current.has(prevId ?? "")
+            ? (highlightMatRef.current ?? defaultMat)
+            : baseFor(prev);
           currentHoveredMeshRef.current = null;
           notify(null);
         }
@@ -296,7 +481,11 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
       const prev = currentHoveredMeshRef.current;
       if (prev) {
         const prevId = meshToId.get(prev) ?? null;
-        prev.material = highlightSetRef.current.has(prevId ?? "") ? (highlightMatRef.current ?? defaultMat) : defaultMat;
+        const ud = prev.userData as { baseMaterial?: THREE.MeshPhysicalMaterial };
+        const base = ud.baseMaterial ?? defaultMat;
+        prev.material = highlightSetRef.current.has(prevId ?? "")
+          ? (highlightMatRef.current ?? defaultMat)
+          : base;
         currentHoveredMeshRef.current = null;
         notify(null);
       }
@@ -364,6 +553,23 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
       for (const halo of halos) {
         halo.quaternion.copy(camera.quaternion);
       }
+
+      const pulseT = performance.now() * 0.0038;
+      const glows = searchGlowMeshesRef.current;
+      for (let idx = 0; idx < spheres.length; idx++) {
+        const s = spheres[idx];
+        if (!s) continue;
+        const id = meshToId.get(s);
+        const glow = glows[idx];
+        if (!glow || !id) continue;
+        const gmat = glow.material as THREE.MeshBasicMaterial;
+        if (highlightSetRef.current.has(id)) {
+          gmat.opacity = 0.36 + 0.32 * Math.sin(pulseT + idx * 0.9);
+        } else {
+          gmat.opacity = 0;
+        }
+      }
+
       renderer.render(scene, camera);
     }
     animate();
@@ -383,6 +589,7 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
       cancelAnimationFrame(animationId);
       sphereGeom.dispose();
       defaultMat.dispose();
+      clusterMats.forEach((m) => m.dispose());
       hoverMat.dispose();
       highlightMat.dispose();
       haloGeom.dispose();
@@ -391,15 +598,24 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
         s.material.map?.dispose();
         s.material.dispose();
       });
+      searchGlowMeshesRef.current.forEach((g) => {
+        const mat = g.material;
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+        else mat.dispose();
+      });
+      searchGlowMeshesRef.current = [];
+      glowGeom.dispose();
       edgeMeshes.forEach((m) => m.geometry.dispose());
       edgeMat.dispose();
+      clusterLineMats.forEach((m) => m.dispose());
+      bridgeMatCache.forEach((m) => m.dispose());
       controls.dispose();
       renderer.dispose();
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
       }
     };
-  }, [notify, nodes]);
+  }, [notify, nodes, positionsProp, edgeMode]);
 
   // Search highlight updates (blue nodes) without rebuilding the whole scene.
   useEffect(() => {
@@ -415,12 +631,14 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
     for (const mesh of spheres) {
       const id = meshToId.get(mesh);
       const shouldHighlight = id ? highlightSetRef.current.has(id) : false;
+      const ud = mesh.userData as { baseMaterial?: THREE.MeshPhysicalMaterial };
+      const base = ud.baseMaterial ?? defaultMat;
       if (shouldHighlight) {
         mesh.material = highlightMat;
       } else if (hoveredMesh && mesh === hoveredMesh) {
         mesh.material = hoverMat;
       } else {
-        mesh.material = defaultMat;
+        mesh.material = base;
       }
     }
   }, [highlightNodeIds]);
