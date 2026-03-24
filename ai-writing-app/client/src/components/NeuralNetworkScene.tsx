@@ -28,21 +28,22 @@ export type NeuralNode = {
 function createLabelSprite(name: string): THREE.Sprite {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d")!;
-  canvas.width = 512;
+  canvas.width = 1024;
   canvas.height = 96;
-  ctx.clearRect(0, 0, 512, 96);
+  ctx.clearRect(0, 0, 1024, 96);
   ctx.font = "600 36px 'Cinzel', 'Times New Roman', serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillStyle = "#8b7235";
-  const shortName = name.length > 14 ? name.slice(0, 12) + "…" : name;
-  ctx.fillText(shortName, 256, 48);
+  const shortName = name.length > 30 ? name.slice(0, 30) + "…" : name;
+  ctx.fillText(shortName, 512, 48);
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.needsUpdate = true;
   const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: true });
   const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(0.95, 0.24, 1);
+  /* Wider canvas (1024) for up to 30 chars; scale.x ~2× vs old 512 so text stays readable */
+  sprite.scale.set(1.9, 0.24, 1);
   return sprite;
 }
 

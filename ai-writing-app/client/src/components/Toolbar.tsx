@@ -21,9 +21,11 @@ const preventFocusLoss = (e: React.MouseEvent) => e.preventDefault();
 
 interface ToolbarProps {
   editor: Editor | null;
+  llmProvider: "auto" | "gemini" | "deepseek";
+  onLlmProviderChange: (value: "auto" | "gemini" | "deepseek") => void;
 }
 
-function Toolbar({ editor }: ToolbarProps) {
+function Toolbar({ editor, llmProvider, onLlmProviderChange }: ToolbarProps) {
   const [editingFontSize, setEditingFontSize] = useState<string | null>(null);
   const [pendingFontSize, setPendingFontSize] = useState<number | null>(null);
   const [isGuideOpen, setIsGuideOpen] = useState(false);
@@ -292,6 +294,21 @@ function Toolbar({ editor }: ToolbarProps) {
       </button>
 
       <div className="toolbar-spacer" />
+
+      <div className="toolbar-api-picker" aria-label="Rewrite API control">
+        <span className="toolbar-api-picker-label">Rewrite API</span>
+        <select
+          className="toolbar-api-picker-select"
+          value={llmProvider}
+          onChange={(e) =>
+            onLlmProviderChange(e.target.value as "auto" | "gemini" | "deepseek")
+          }
+        >
+          <option value="auto">Auto</option>
+          <option value="gemini">Gemini</option>
+          <option value="deepseek">DeepSeek</option>
+        </select>
+      </div>
 
       {/* Guide */}
       <button

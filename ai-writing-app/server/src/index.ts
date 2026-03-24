@@ -1,30 +1,38 @@
+import { prisma } from "./db.js";
 import express, { Request, Response, NextFunction } from "express";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import rateLimit from "express-rate-limit";
 import cors from "cors";
-import dotenv from "dotenv";
-import { prisma } from "./db.js";
 import { seedAgentsFromMarkdown } from "./agents/seedAgentsFromMarkdown.js";
-
-// Load environment variables from .env file
-dotenv.config();
+import { createLlmClients, getHttpStatusDeep, type LlmProviderMode } from "./llm.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
 
-// Environment variables
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+// Environment variables — Gemini first; DeepSeek optional fallback when quota/rate limits hit
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY?.trim();
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY?.trim();
 const SHARED_SECRET = process.env.SHARED_SECRET;
 
-// Validate required environment variables
-if (!GEMINI_API_KEY) {
-  console.error("ERROR: GEMINI_API_KEY environment variable is required");
-  console.error("Set it in your .env file or environment");
+if (!GEMINI_API_KEY && !DEEPSEEK_API_KEY) {
+  console.error("ERROR: Set at least one of GEMINI_API_KEY or DEEPSEEK_API_KEY in .env");
   process.exit(1);
 }
 
-// Initialize Google Gemini client
-const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+const llm = createLlmClients({
+  geminiApiKey: GEMINI_API_KEY || undefined,
+  deepseekApiKey: DEEPSEEK_API_KEY || undefined,
+});
+
+if (GEMINI_API_KEY && DEEPSEEK_API_KEY) {
+  console.log("[llm] Gemini primary; DeepSeek fallback enabled");
+} else if (DEEPSEEK_API_KEY && !GEMINI_API_KEY) {
+  console.log("[llm] DeepSeek only (no GEMINI_API_KEY)");
+} else {
+  console.log("[llm] Gemini only (add DEEPSEEK_API_KEY for quota fallback)");
+}
+if (GEMINI_API_KEY && !DEEPSEEK_API_KEY) {
+  console.warn("[llm] WARNING: DEEPSEEK_API_KEY missing — no fallback when Gemini fails");
+}
 
 // CORS configuration - allow requests from client
 app.use(
@@ -54,10 +62,10 @@ seedAgentsFromMarkdown(prisma)
     console.error("[agents] failed to sync from markdown:", err);
   });
 
-// Rate limiting middleware
+// Rate limiting (generous in dev so /api/rewrite isn't 429 before the LLM runs)
 const limiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 60, // 60 requests per minute per IP
+  windowMs: 60 * 1000,
+  max: process.env.NODE_ENV === "production" ? 60 : 400,
   message: {
     error: "Too many requests, please try again later.",
   },
@@ -421,14 +429,7 @@ app.post(
         `${JSON.stringify(agentsForPrompt)}\n\n` +
         `Rank the agents that best match the user's description.`;
 
-      const model = genAI.getGenerativeModel({
-        model: "gemini-2.5-flash",
-        systemInstruction,
-      });
-
-      const result = await model.generateContent(userPrompt);
-      const response = result.response;
-      const text = response.text();
+      const text = await llm.generateText(systemInstruction, userPrompt);
 
       // Try to parse JSON even if the model adds stray text.
       const jsonCandidate = text.match(/\{[\s\S]*\}/)?.[0];
@@ -547,11 +548,6 @@ Preserve the meaning and intent while improving clarity, style, or following the
         systemInstruction = parts.filter(Boolean).join("\n");
       }
 
-      const model = genAI.getGenerativeModel({
-        model: "gemini-2.5-flash",
-        systemInstruction,
-      });
-
       // Context documents: support both `contextId` (legacy) and `contextIds` (multi-select).
       const contextIdsArr: string[] = [];
       if (Array.isArray(contextIds)) {
@@ -606,9 +602,13 @@ Preserve the meaning and intent while improving clarity, style, or following the
         ? `The phrase to replace appears inside the following sentence (treat the sentence as ground truth for word sense):\n\n"${sentenceCtx}"\n\nExact phrase to replace (substring of that sentence):\n\n${text}${contextBlock}\n\nUser instruction: ${prompt}\n\nReply with ONLY the substitute phrase—plain words, no quotes or asterisks, not the full sentence.`
         : `Text to rewrite:\n\n${text}\n${contextBlock}\n\nUser instruction: ${prompt}\n\nPlease rewrite the text according to the instruction.`;
 
-      const result = await model.generateContent(userPrompt);
-      const response = result.response;
-      let rewrite = response.text();
+      const rawLlm = req.body?.llmProvider;
+      const llmProvider: LlmProviderMode =
+        rawLlm === "gemini" || rawLlm === "deepseek" || rawLlm === "auto"
+          ? rawLlm
+          : "auto";
+
+      let rewrite = await llm.generateText(systemInstruction, userPrompt, llmProvider);
       if (useSentenceSynonymMode && typeof rewrite === "string") {
         rewrite = rewrite
           .trim()
@@ -622,41 +622,47 @@ Preserve the meaning and intent while improving clarity, style, or following the
         rewrite,
       });
     } catch (error: any) {
-      console.error("Error calling Gemini API:", error);
+      console.error("Error calling LLM (rewrite):", error);
 
-      // Handle specific Gemini API errors
-      if (error.status === 401 || error.status === 403) {
+      const status =
+        getHttpStatusDeep(error) ??
+        (typeof error?.status === "number" ? error.status : undefined) ??
+        (typeof error?.statusCode === "number" ? error.statusCode : undefined);
+      const msg = String(error?.message ?? error);
+
+      if (status === 401) {
         return res.status(500).json({
-          error: "Invalid API key. Please check GEMINI_API_KEY environment variable.",
+          error:
+            "Invalid API key. Check GEMINI_API_KEY and/or DEEPSEEK_API_KEY in your environment.",
         });
       }
 
-      if (error.status === 404) {
-        // Model not found - try to provide helpful error
+      if (status === 404) {
         return res.status(500).json({
-          error: "Model not found. The model name may be incorrect or not available in your region.",
-          details: error.message || "Try checking available models in Google AI Studio.",
-          suggestion: "Available models might be: gemini-1.5-flash-latest, gemini-1.5-pro-latest, or gemini-pro"
+          error: "Model not found or unavailable.",
+          details: msg,
         });
       }
 
-      if (error.status === 429) {
+      if (status === 429) {
         return res.status(429).json({
-          error: "Rate limit exceeded. Please try again later.",
+          error: msg.includes("DeepSeek API")
+            ? "DeepSeek rate limit or error. Try again in a moment."
+            : "Gemini rate limit or quota exceeded. If this persists, check DeepSeek fallback and server logs.",
+          details: msg.slice(0, 400),
         });
       }
 
-      if (error.status === 400) {
+      if (status === 400) {
         return res.status(400).json({
-          error: "Invalid request to Gemini API",
-          details: error.message,
+          error: "Invalid request to the language model",
+          details: msg,
         });
       }
 
-      // Generic error
       return res.status(500).json({
         error: "Failed to generate rewrite",
-        details: error.message || "Unknown error",
+        details: msg || "Unknown error",
       });
     }
   }

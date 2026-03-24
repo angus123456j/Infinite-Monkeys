@@ -260,6 +260,11 @@
   min-width: 0;
 }
 
+.network-cluster-legend-text strong {
+  font-weight: 600;
+  word-break: break-word;
+}
+
 .network-cluster-legend-preview {
   display: block;
   opacity: 0.92;

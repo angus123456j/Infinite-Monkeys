@@ -6,15 +6,16 @@ import NeuralNetworkScene, {
   type NeuralNode,
 } from "../components/NeuralNetworkScene";
 import { agentsToFeatureMatrix } from "../lib/agentSemanticEmbedding";
+import { computeClusterTitles } from "../lib/clusterLabels";
 import { layoutClusteredNodes } from "../lib/clusterLayout";
 import { kMeans } from "../lib/kmeans";
 import { listAgents, searchAgents, type AgentMeta } from "../lib/agents";
 import "./MonkeyAgentsNetworkPage.css";
 
-/** Fixed server-side–style K: not exposed in UI. */
+/** Heuristic K (sqrt-ish), capped so the legend stays readable. */
 function automaticClusterCount(agentCount: number): number {
   if (agentCount < 2) return 2;
-  return Math.min(8, Math.max(2, Math.round(Math.sqrt(agentCount))));
+  return Math.min(12, Math.max(2, Math.round(Math.sqrt(agentCount))));
 }
 
 export default function MonkeyAgentsNetworkPage() {
@@ -55,14 +56,19 @@ export default function MonkeyAgentsNetworkPage() {
     if (agents.length < 2) return null;
     const k = Math.min(automaticClusterCount(agents.length), agents.length);
     const matrix = agentsToFeatureMatrix(agents);
-    const { assignments } = kMeans(matrix, k, { seed: 42, maxIter: 100 });
+    const { assignments } = kMeans(matrix, k, {
+      seed: 42,
+      maxIter: 100,
+      init: "kmeans++",
+    });
     const positions = layoutClusteredNodes(assignments, k);
+    const clusterTitles = computeClusterTitles(agents, assignments, k);
     const neuralNodes: NeuralNode[] = agents.map((a, i) => ({
       id: a.id,
       name: a.name,
       clusterId: assignments[i],
     }));
-    return { assignments, positions, neuralNodes };
+    return { assignments, positions, neuralNodes, clusterTitles };
   }, [agents]);
 
   const nodes = useMemo<NeuralNode[]>(() => {
@@ -86,6 +92,7 @@ export default function MonkeyAgentsNetworkPage() {
       .sort((a, b) => a[0] - b[0])
       .map(([id, names]) => ({
         id,
+        title: clustered.clusterTitles.get(id) ?? `Group ${id + 1}`,
         preview: names.slice(0, 4).join(", ") + (names.length > 4 ? "…" : ""),
       }));
   }, [agents, clustered]);
@@ -222,7 +229,7 @@ export default function MonkeyAgentsNetworkPage() {
                   }}
                 />
                 <span className="network-cluster-legend-text">
-                  <strong>Group {row.id + 1}</strong>
+                  <strong>{row.title}</strong>
                   <span className="network-cluster-legend-preview">{row.preview}</span>
                 </span>
               </li>

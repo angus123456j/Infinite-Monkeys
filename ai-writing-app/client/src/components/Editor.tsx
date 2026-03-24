@@ -4,7 +4,6 @@ import {
   useRef,
   useState,
   useEffect,
-  useLayoutEffect,
   useCallback,
   MouseEvent,
 } from "react";
@@ -25,6 +24,7 @@ import { joinForward } from "@tiptap/pm/commands";
 import { getAgent } from "../lib/agents";
 import { listContexts } from "../lib/contexts";
 import { extractSentenceContext } from "../lib/extractSentenceContext";
+import { apiFetch } from "../lib/api";
 
 /** Fixed 50 lines per page. Line height in px (11pt × 1.15 ≈ 17). */
 const LINES_PER_PAGE = 50;
@@ -158,6 +158,19 @@ function isSynonymSpecialistAgentName(name: string): boolean {
 const SAVE_DEBOUNCE_MS = 1500;
 const PERIODIC_SAVE_MS = 30_000;
 
+const LLM_PROVIDER_STORAGE_KEY = "im-llm-provider";
+type LlmProviderChoice = "auto" | "gemini" | "deepseek";
+
+function readStoredLlmProvider(): LlmProviderChoice {
+  try {
+    const v = localStorage.getItem(LLM_PROVIDER_STORAGE_KEY);
+    if (v === "gemini" || v === "deepseek" || v === "auto") return v;
+  } catch {
+    /* ignore */
+  }
+  return "auto";
+}
+
 interface EditorProps {
   docId?: string;
   initialContent?: string;
@@ -183,51 +196,24 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
 
   const contentRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
-  const editorPageAreaRef = useRef<HTMLDivElement>(null);
   const [pageCount, setPageCount] = useState(1);
   const [containerMinHeight, setContainerMinHeight] = useState(PAGE_HEIGHT);
   const [contentVersion, setContentVersion] = useState(0);
+  const [llmProvider, setLlmProvider] = useState<LlmProviderChoice>(() =>
+    readStoredLlmProvider()
+  );
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LLM_PROVIDER_STORAGE_KEY, llmProvider);
+    } catch {
+      /* ignore */
+    }
+  }, [llmProvider]);
 
   useEffect(() => {
     if (editor && onEditorReady) onEditorReady(editor);
   }, [editor, onEditorReady]);
-
-  /** Keep fixed Monkey timeline top edge aligned with the document (page) top in the viewport. */
-  const syncAgentTimelineTop = useCallback(() => {
-    const el = pageRef.current;
-    if (!el) return;
-    const top = el.getBoundingClientRect().top;
-    document.documentElement.style.setProperty(
-      "--agent-timeline-top",
-      `${Math.max(6, top)}px`
-    );
-  }, []);
-
-  useLayoutEffect(() => {
-    syncAgentTimelineTop();
-  }, [syncAgentTimelineTop, containerMinHeight, contentVersion]);
-
-  useEffect(() => {
-    syncAgentTimelineTop();
-    const pageArea = editorPageAreaRef.current;
-    const onMove = () => syncAgentTimelineTop();
-    window.addEventListener("resize", onMove);
-    window.addEventListener("scroll", onMove, true);
-    pageArea?.addEventListener("scroll", onMove, { passive: true });
-    const pageEl = pageRef.current;
-    const ro =
-      pageEl &&
-      new ResizeObserver(() => {
-        syncAgentTimelineTop();
-      });
-    if (pageEl && ro) ro.observe(pageEl);
-    return () => {
-      window.removeEventListener("resize", onMove);
-      window.removeEventListener("scroll", onMove, true);
-      pageArea?.removeEventListener("scroll", onMove);
-      ro?.disconnect();
-    };
-  }, [syncAgentTimelineTop, editor, containerMinHeight, contentVersion]);
 
   // Overlay state
   const [isOverlayOpen, setIsOverlayOpen] = useState(false);
@@ -744,31 +730,15 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
       }
       const trimmedCtx = sentenceContext?.trim();
       if (trimmedCtx) payload.sentenceContext = trimmedCtx;
+      payload.llmProvider = llmProvider;
 
-      const response = await fetch("http://localhost:3001/api/rewrite", {
+      const data = await apiFetch<{ rewrite: string }>("/api/rewrite", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-
-      if (!response.ok) {
-        if (response.status === 404) {
-          throw new Error(
-            "Server not found. Make sure the server is running on http://localhost:3001"
-          );
-        }
-        const errorData = await response
-          .json()
-          .catch(() => ({ error: "Unknown error" }));
-        throw new Error(
-          errorData.error || `HTTP error! status: ${response.status}`
-        );
-      }
-
-      const data = await response.json();
       return data.rewrite;
     },
-    []
+    [llmProvider]
   );
 
   // Handle overlay submit — close overlay, highlight text, insert spacers, start async API call
@@ -947,7 +917,15 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
         );
       });
     }
-  }, [prompt, editor, storedSelection, selectedAgentId, selectedContextIds, fetchRewrite]);
+  }, [
+    prompt,
+    editor,
+    storedSelection,
+    selectedAgentId,
+    selectedContextIds,
+    fetchRewrite,
+    llmProvider,
+  ]);
 
   // Accept a specific inline suggestion — remove spacers, replace highlighted text
   const handleSuggestionAccept = useCallback(
@@ -1046,8 +1024,12 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
 
   return (
     <>
-      <Toolbar editor={editor} />
-      <div className="editor-page-area" ref={editorPageAreaRef}>
+      <Toolbar
+        editor={editor}
+        llmProvider={llmProvider}
+        onLlmProviderChange={setLlmProvider}
+      />
+      <div className="editor-page-area">
         <div className="editor-document-center">
         <div
           className="writing-effect-wrapper"

@@ -116,19 +116,13 @@ export default function AgentInvocationTimeline({
                     </p>
                   </div>
                   <div className="agent-invocation-popover-section">
-                    <span className="agent-invocation-popover-label">Your prompt</span>
-                    <p className="agent-invocation-popover-value agent-invocation-popover-pre">
-                      {e.userPrompt.trim()
-                        ? e.userPrompt
-                        : "(empty — default instruction used)"}
-                    </p>
-                  </div>
-                  <div className="agent-invocation-popover-section">
                     <span className="agent-invocation-popover-label">
                       Instruction sent
                     </span>
                     <p className="agent-invocation-popover-value agent-invocation-popover-pre">
-                      {e.apiPromptSent}
+                      {e.apiPromptSent.trim()
+                        ? e.apiPromptSent
+                        : "(empty — default instruction used)"}
                     </p>
                   </div>
                   <div className="agent-invocation-popover-section">
