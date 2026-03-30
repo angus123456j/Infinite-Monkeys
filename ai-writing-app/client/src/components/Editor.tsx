@@ -25,6 +25,7 @@ import { getAgent, listAgents, type AgentMeta } from "../lib/agents";
 import { listContexts } from "../lib/contexts";
 import { extractSentenceContext } from "../lib/extractSentenceContext";
 import { apiFetch } from "../lib/api";
+import { extraSpacerParagraphsNeeded } from "../lib/pretextRewriteLayout";
 
 /** Fixed 50 lines per page. Line height in px (11pt × 1.15 ≈ 17). */
 const LINES_PER_PAGE = 50;
@@ -622,17 +623,12 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
             (r) => r.id === rw.id
           );
           if (currentRef) {
-            const contentWidth = 816 - 96 * 2; // page width minus padding
-            const avgCharWidth = 7; // approximate for 11pt Arial
-            const charsPerLine = Math.floor(contentWidth / avgCharWidth);
-            const textLines = Math.ceil(rw.rewriteText.length / charsPerLine);
-            // Reserve more room for long rewrites so they don't overlap text
-            // below. Short phrases get ~2–3 spacer paragraphs, while long
-            // paragraphs can reserve up to ~10 lines of spacers.
-            const totalNeeded = Math.min(10, textLines + 2);
             const currentSpacers =
               (currentRef.spacerTo - currentRef.spacerFrom) / 2;
-            const extraNeeded = Math.max(0, totalNeeded - currentSpacers);
+            const extraNeeded = extraSpacerParagraphsNeeded(
+              rw.rewriteText,
+              currentSpacers
+            );
 
             if (extraNeeded > 0) {
               editor
@@ -812,6 +808,36 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
       setOrchestratorChain((prev) => prev.map((v, i) => (i === idx ? agentId : v)));
     },
     []
+  );
+
+  /** Pretext-based spacer inserts so reveal height matches body column (see pretextRewriteLayout.ts). */
+  const insertPretextRevealSpacers = useCallback(
+    (rwId: number, rewriteText: string) => {
+      if (!editor) return;
+      const p = pendingRewritesRef.current.find((r) => r.id === rwId);
+      if (!p) return;
+      const currentCount = (p.spacerTo - p.spacerFrom) / 2;
+      const extra = extraSpacerParagraphsNeeded(rewriteText, currentCount);
+      if (extra <= 0) return;
+      editor
+        .chain()
+        .command(({ tr, state }) => {
+          let pos = p.spacerTo;
+          const paragraphType = state.schema.nodes["paragraph"];
+          if (!paragraphType) return false;
+          for (let i = 0; i < extra; i++) {
+            tr.insert(pos, paragraphType.create());
+            pos += 2;
+          }
+          return true;
+        })
+        .run();
+      const newSpacerTo = p.spacerTo + extra * 2;
+      pendingRewritesRef.current = pendingRewritesRef.current.map((r) =>
+        r.id === rwId ? { ...r, spacerTo: newSpacerTo } : r
+      );
+    },
+    [editor]
   );
 
   const handleOrchestratorPropose = useCallback(async () => {
@@ -997,16 +1023,30 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
         );
       }
 
+      insertPretextRevealSpacers(id, currentText);
+      const latestOrchestratorRw = pendingRewritesRef.current.find((r) => r.id === id)!;
       setPendingRewrites((prev) =>
         prev.map((rw) =>
           rw.id === id
-            ? { ...rw, rewriteText: currentText, isLoading: false, isRevealing: true }
+            ? {
+                ...rw,
+                rewriteText: currentText,
+                isLoading: false,
+                isRevealing: true,
+                spacerTo: latestOrchestratorRw.spacerTo,
+              }
             : rw
         )
       );
       pendingRewritesRef.current = pendingRewritesRef.current.map((rw) =>
         rw.id === id
-          ? { ...rw, rewriteText: currentText, isLoading: false, isRevealing: true }
+          ? {
+              ...rw,
+              rewriteText: currentText,
+              isLoading: false,
+              isRevealing: true,
+              spacerTo: latestOrchestratorRw.spacerTo,
+            }
           : rw
       );
 
@@ -1049,6 +1089,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
     getSelectionInfo,
     fetchRewrite,
     orchestratorChain.length,
+    insertPretextRevealSpacers,
   ]);
 
   // Handle overlay submit — close overlay, highlight text, insert spacers, start async API call
@@ -1177,16 +1218,30 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
         currentContextIds,
         sentenceContext
       );
+      insertPretextRevealSpacers(id, result);
+      const latestRw = pendingRewritesRef.current.find((r) => r.id === id)!;
       setPendingRewrites((prev) =>
         prev.map((rw) =>
           rw.id === id
-            ? { ...rw, rewriteText: result, isLoading: false, isRevealing: true }
+            ? {
+                ...rw,
+                rewriteText: result,
+                isLoading: false,
+                isRevealing: true,
+                spacerTo: latestRw.spacerTo,
+              }
             : rw
         )
       );
       pendingRewritesRef.current = pendingRewritesRef.current.map((rw) =>
         rw.id === id
-          ? { ...rw, rewriteText: result, isLoading: false, isRevealing: true }
+          ? {
+              ...rw,
+              rewriteText: result,
+              isLoading: false,
+              isRevealing: true,
+              spacerTo: latestRw.spacerTo,
+            }
           : rw
       );
       setInvocationLog((prev) =>
@@ -1235,6 +1290,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
     selectedContextIds,
     fetchRewrite,
     llmProvider,
+    insertPretextRevealSpacers,
   ]);
 
   // Accept a specific inline suggestion — remove spacers, replace highlighted text
