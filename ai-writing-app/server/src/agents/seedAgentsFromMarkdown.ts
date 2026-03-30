@@ -1,6 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { PrismaClient } from "../generated/prisma/client.js";
+import { normalizeArchetype } from "./archetype.js";
 
 export interface SeedAgentsResult {
   created: number;
@@ -32,7 +33,7 @@ function parseAgentMarkdown(md: string): AgentShape | null {
   const name = (nameMatch?.[1] ?? "").trim();
   if (!name) return null;
 
-  const role = section(md, "Role") || "Generalist";
+  const role = normalizeArchetype(name, section(md, "Role") || "Specialist");
   const strengths = section(md, "Strengths");
   const identity = section(md, "Identity");
   const behavior = section(md, "Behavior");
@@ -65,7 +66,7 @@ export async function seedAgentsFromMarkdown(prisma: PrismaClient): Promise<Seed
   const deleted = await prisma.monkeyAgent.deleteMany({
     where: {
       name: "New monkey",
-      role: "Generalist",
+      role: { in: ["Generalist", "Specialist"] },
       strengths: "",
       identity: "",
       behavior: "",

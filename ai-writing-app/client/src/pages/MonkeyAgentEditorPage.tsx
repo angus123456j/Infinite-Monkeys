@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { getAgent, updateAgent, type AgentMeta } from "../lib/agents";
+import { archetypeDescription, getAgent, updateAgent, type AgentMeta } from "../lib/agents";
 
 const SAVE_DEBOUNCE_MS = 1500;
 const PERIODIC_SAVE_MS = 30_000;
@@ -135,6 +135,14 @@ export default function MonkeyAgentEditorPage() {
           <div className="agent-doc-header">
             <span className="agent-doc-filename">Monkey Souls.md</span>
           </div>
+          <section className="agent-section">
+            <h2 className="agent-section-heading">Archetype</h2>
+            <p className="agent-section-hint">
+              <strong>{agent?.role ?? "Specialist"}</strong> -{" "}
+              {archetypeDescription(agent?.role ?? "Specialist")}
+            </p>
+          </section>
+
           <section className="agent-section">
             <h2 className="agent-section-heading">Identity</h2>
             <p className="agent-section-hint">

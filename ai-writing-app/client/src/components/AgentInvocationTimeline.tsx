@@ -55,21 +55,13 @@ export default function AgentInvocationTimeline({
     leaveTimer.current = setTimeout(() => setOpenId(null), 180);
   }, [clearLeave]);
 
-  if (entries.length === 0) {
-    return (
-      <aside className="agent-invocation-timeline" aria-label="Monkey timeline">
-        <div className="agent-invocation-timeline-inner">
-          <h3 className="agent-invocation-timeline-heading">{TIMELINE_TITLE}</h3>
-        </div>
-      </aside>
-    );
-  }
-
   return (
     <aside className="agent-invocation-timeline" aria-label="Monkey timeline">
       <div className="agent-invocation-timeline-inner">
         <h3 className="agent-invocation-timeline-heading">{TIMELINE_TITLE}</h3>
-        <ol className="agent-invocation-timeline-list">
+
+        {entries.length === 0 ? null : (
+          <ol className="agent-invocation-timeline-list">
           {entries.map((e) => (
             <li
               key={e.id}
@@ -153,7 +145,8 @@ export default function AgentInvocationTimeline({
               )}
             </li>
           ))}
-        </ol>
+          </ol>
+        )}
       </div>
     </aside>
   );

@@ -3,7 +3,9 @@ import express, { Request, Response, NextFunction } from "express";
 import rateLimit from "express-rate-limit";
 import cors from "cors";
 import { seedAgentsFromMarkdown } from "./agents/seedAgentsFromMarkdown.js";
+import { normalizeArchetype } from "./agents/archetype.js";
 import { createLlmClients, getHttpStatusDeep, type LlmProviderMode } from "./llm.js";
+import { sanitizeRewriteOutput } from "./rewriteSanitize.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -50,13 +52,34 @@ app.use(
 app.use(express.json());
 
 // Seed/Sync monkey agents from markdown templates (and remove placeholders)
+async function normalizeExistingAgentArchetypes() {
+  const agents = await prisma.monkeyAgent.findMany({
+    select: { id: true, name: true, role: true },
+  });
+  let changed = 0;
+  for (const a of agents) {
+    const next = normalizeArchetype(a.name, a.role);
+    if (next !== a.role) {
+      await prisma.monkeyAgent.update({
+        where: { id: a.id },
+        data: { role: next },
+      });
+      changed++;
+    }
+  }
+  if (changed) {
+    console.log(`[agents] normalized archetypes: updated=${changed}`);
+  }
+}
+
 seedAgentsFromMarkdown(prisma)
-  .then((r) => {
+  .then(async (r) => {
     if (r.created || r.updated || r.deletedPlaceholders) {
       console.log(
         `[agents] synced from markdown: created=${r.created} updated=${r.updated} deletedPlaceholders=${r.deletedPlaceholders} skipped=${r.skipped}`
       );
     }
+    await normalizeExistingAgentArchetypes();
   })
   .catch((err) => {
     console.error("[agents] failed to sync from markdown:", err);
@@ -289,6 +312,8 @@ app.post(
       const identityStr = identity != null ? String(identity) : "";
       const behaviorStr = behavior != null ? String(behavior) : "";
       const constraintsStr = constraints != null ? String(constraints) : "";
+      const nameStr = name != null ? String(name).trim() : "New monkey";
+      const archetype = normalizeArchetype(nameStr, role);
       const defaultPromptVal =
         defaultPrompt != null && defaultPrompt !== ""
           ? String(defaultPrompt)
@@ -297,8 +322,8 @@ app.post(
               .join("\n\n");
       const agent = await prisma.monkeyAgent.create({
         data: {
-          name: name != null ? String(name).trim() : "New monkey",
-          role: role != null ? String(role) : "Generalist",
+          name: nameStr,
+          role: archetype,
           strengths: strengths != null ? String(strengths) : "",
           avatar: avatar != null ? String(avatar) : null,
           defaultPrompt: defaultPromptVal,
@@ -331,9 +356,14 @@ app.patch("/api/agents/:id", async (req: Request, res: Response) => {
   try {
     const id = String(req.params.id);
     const { name, role, strengths, avatar, defaultPrompt, identity, behavior, constraints } = req.body;
+    const existing = await prisma.monkeyAgent.findUnique({ where: { id } });
+    if (!existing) return res.status(404).json({ error: "Agent not found" });
     const data: Record<string, unknown> = {};
-    if (name !== undefined) data.name = String(name).trim();
-    if (role !== undefined) data.role = String(role);
+    const nextName = name !== undefined ? String(name).trim() : existing.name;
+    if (name !== undefined) data.name = nextName;
+    if (name !== undefined || role !== undefined) {
+      data.role = normalizeArchetype(nextName, role !== undefined ? role : existing.role);
+    }
     if (strengths !== undefined) data.strengths = String(strengths);
     if (avatar !== undefined) data.avatar = avatar == null ? null : String(avatar);
     if (identity !== undefined) data.identity = String(identity);
@@ -346,7 +376,6 @@ app.patch("/api/agents/:id", async (req: Request, res: Response) => {
     });
     res.json(item);
   } catch (error: any) {
-    if (error?.code === "P2025") return res.status(404).json({ error: "Agent not found" });
     console.error("Error updating agent:", error);
     res.status(500).json({ error: "Failed to update agent" });
   }
@@ -478,6 +507,129 @@ app.post(
   }
 );
 
+// Orchestrator plan endpoint
+// Given an input text, choose an ordered sequence of Specialist-style agents.
+app.post(
+  "/api/orchestrator/plan",
+  limiter,
+  authMiddleware,
+  async (req: Request, res: Response) => {
+    try {
+      const { text, prompt } = req.body ?? {};
+      const rawLlm = req.body?.llmProvider;
+      const llmProvider: LlmProviderMode =
+        rawLlm === "gemini" || rawLlm === "deepseek" || rawLlm === "auto"
+          ? rawLlm
+          : "auto";
+
+      if (!text || typeof text !== "string") {
+        return res.status(400).json({ error: "Missing or invalid 'text' field" });
+      }
+
+      const instruction = typeof prompt === "string" ? prompt : "";
+
+      const candidates = await prisma.monkeyAgent.findMany({
+        where: { role: { in: ["Specialist", "Synonym Specialist"] } },
+        select: {
+          id: true,
+          name: true,
+          role: true,
+          strengths: true,
+          identity: true,
+          behavior: true,
+          constraints: true,
+        },
+        orderBy: { updatedAt: "desc" },
+      });
+
+      if (!candidates.length) {
+        return res.status(500).json({ error: "No specialist monkeys configured" });
+      }
+
+      const agentsForPrompt = candidates.slice(0, 60).map((a) => ({
+        id: a.id,
+        name: a.name,
+        role: a.role,
+        strengths: a.strengths?.slice(0, 220),
+        identity: a.identity?.slice(0, 220),
+        behavior: a.behavior?.slice(0, 220),
+        constraints: a.constraints?.slice(0, 220),
+      }));
+
+      const systemInstruction =
+        `You are Orchestrator, a higher-order writing assistant.\n` +
+        `Given an input text and a user instruction, you must propose an ordered sequence of 1 to 3 specialist agents.\n` +
+        `Return ONLY valid JSON with this exact shape:\n` +
+        `{\n` +
+        `  "sequence": [ { "agentId": "<string>" } ]\n` +
+        `}\n` +
+        `Rules:\n` +
+        `- Choose agentIds ONLY from the provided agent list.\n` +
+        `- The first agent in the sequence should be the Synonym Specialist if it is appropriate for the text.\n` +
+        `- Keep the sequence short (1 to 3 agents).\n` +
+        `- Do not include explanations.`;
+
+      const userPrompt =
+        `Input text:\n${text}\n\n` +
+        (instruction
+          ? `User instruction:\n${instruction}\n\n`
+          : `User instruction is not provided.\n\n`) +
+        `Specialist agents:\n${JSON.stringify(agentsForPrompt)}\n\n` +
+        `Propose the best sequence of agentIds.`;
+
+      const raw = await llm.generateText(systemInstruction, userPrompt, llmProvider);
+      const cleaned = sanitizeRewriteOutput(raw);
+
+      const jsonCandidate = cleaned.match(/\{[\s\S]*\}/)?.[0];
+      let parsed: { sequence?: Array<{ agentId?: unknown }> } | null = null;
+      if (jsonCandidate) {
+        try {
+          parsed = JSON.parse(jsonCandidate) as {
+            sequence?: Array<{ agentId?: unknown }>;
+          };
+        } catch {
+          parsed = null;
+        }
+      }
+
+      const agentIdSet = new Set(candidates.map((c) => c.id));
+      const rawSeq = parsed?.sequence ?? [];
+      const seqIds: string[] = [];
+      for (const row of rawSeq) {
+        const id = row?.agentId;
+        if (typeof id === "string" && agentIdSet.has(id) && !seqIds.includes(id)) {
+          seqIds.push(id);
+        }
+      }
+
+      if (!seqIds.length) seqIds.push(candidates[0]!.id);
+
+      // Enforce synonym specialist first if present.
+      const synonymIds = candidates
+        .filter(
+          (c) =>
+            c.role === "Synonym Specialist" ||
+            c.name.toLowerCase().includes("synonym sensei") ||
+            c.name.toLowerCase().includes("synonym monkey")
+        )
+        .map((c) => c.id);
+      const synonymSet = new Set(synonymIds);
+      const hasSynonym = seqIds.some((id) => synonymSet.has(id));
+      const reordered = hasSynonym
+        ? [
+            ...seqIds.filter((id) => synonymSet.has(id)),
+            ...seqIds.filter((id) => !synonymSet.has(id)),
+          ]
+        : seqIds;
+
+      res.json({ sequence: reordered.slice(0, 3) });
+    } catch (error: any) {
+      console.error("Error calling orchestrator plan:", error);
+      res.status(500).json({ error: "Failed to generate orchestrator plan" });
+    }
+  }
+);
+
 // Rewrite endpoint
 app.post(
   "/api/rewrite",
@@ -523,9 +675,10 @@ app.post(
       const useSentenceSynonymMode = isSynonymSpecialist && sentenceCtx.length > 0;
 
       // Build system instruction — inject agent personality when provided
-      let systemInstruction = `You are a helpful writing assistant. Rewrite the provided text according to the user's instructions. 
-Return only the rewritten text, without explanations or meta-commentary. 
-Preserve the meaning and intent while improving clarity, style, or following the specific instructions given.`;
+      let systemInstruction = `You are a helpful writing assistant. Rewrite the provided text according to the user's instructions.
+Return only the rewritten text, without explanations or meta-commentary.
+Preserve the meaning and intent while improving clarity, style, or following the specific instructions given.
+Output plain prose only: no markdown (no asterisks, underscores, or backticks used for emphasis), no bullet lists with asterisks, no LaTeX or math delimiters.`;
 
       if (loadedAgent) {
         const parts = [
@@ -538,6 +691,7 @@ Preserve the meaning and intent while improving clarity, style, or following the
           "",
           "Rewrite the provided text according to the user's instructions.",
           "Return only the rewritten text, without explanations or meta-commentary.",
+          "Use plain prose only: no markdown formatting and no LaTeX.",
         ];
         if (useSentenceSynonymMode) {
           parts.push(
@@ -600,7 +754,7 @@ Preserve the meaning and intent while improving clarity, style, or following the
 
       const userPrompt = useSentenceSynonymMode
         ? `The phrase to replace appears inside the following sentence (treat the sentence as ground truth for word sense):\n\n"${sentenceCtx}"\n\nExact phrase to replace (substring of that sentence):\n\n${text}${contextBlock}\n\nUser instruction: ${prompt}\n\nReply with ONLY the substitute phrase—plain words, no quotes or asterisks, not the full sentence.`
-        : `Text to rewrite:\n\n${text}\n${contextBlock}\n\nUser instruction: ${prompt}\n\nPlease rewrite the text according to the instruction.`;
+        : `Text to rewrite:\n\n${text}\n${contextBlock}\n\nUser instruction: ${prompt}\n\nPlease rewrite the text according to the instruction. Reply with plain text only (no markdown asterisks, no LaTeX).`;
 
       const rawLlm = req.body?.llmProvider;
       const llmProvider: LlmProviderMode =
@@ -608,10 +762,11 @@ Preserve the meaning and intent while improving clarity, style, or following the
           ? rawLlm
           : "auto";
 
-      let rewrite = await llm.generateText(systemInstruction, userPrompt, llmProvider);
-      if (useSentenceSynonymMode && typeof rewrite === "string") {
+      let rewrite = sanitizeRewriteOutput(
+        await llm.generateText(systemInstruction, userPrompt, llmProvider)
+      );
+      if (useSentenceSynonymMode) {
         rewrite = rewrite
-          .trim()
           .replace(/^\*+|\*+$/g, "")
           .replace(/^["'`]+|["'`]+$/g, "")
           .trim();

@@ -202,7 +202,7 @@ export default function MonkeyAgentsNetworkPage() {
           <div className="network-overlay-panel-divider" />
           <p className="network-overlay-panel-text" style={{ whiteSpace: "pre-wrap" }}>
             {[
-              hoveredAgent.role ? `Role: ${hoveredAgent.role}` : "",
+              hoveredAgent.role ? `Archetype: ${hoveredAgent.role}` : "",
               hoveredAgent.strengths ? `\nStrengths:\n${hoveredAgent.strengths}` : "",
               hoveredAgent.identity ? `\nIdentity:\n${hoveredAgent.identity}` : "",
               hoveredAgent.behavior ? `\nBehavior:\n${hoveredAgent.behavior}` : "",

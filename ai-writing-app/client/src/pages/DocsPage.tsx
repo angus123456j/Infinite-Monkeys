@@ -11,7 +11,12 @@ import {
   deleteFolder,
 } from "../lib/docs";
 import { listContexts, createContext, deleteContext, type ContextItem } from "../lib/contexts";
-import { listAgents, createAgent, deleteAgent, type AgentMeta } from "../lib/agents";
+import {
+  listAgents,
+  createAgent,
+  deleteAgent,
+  type AgentMeta,
+} from "../lib/agents";
 
 function truncateDisplayName(value: string, maxChars = 20): string {
   if (value.length <= maxChars) return value;
@@ -680,6 +685,25 @@ export default function DocsPage() {
               </button>
               <div className="docs-sidebar-note">
                 Define specialist monkeys you can later summon in the editor.
+              </div>
+              <div className="docs-sidebar-archetypes">
+                <div className="docs-sidebar-archetypes-title">Archetypes</div>
+                <div className="docs-sidebar-archetype-item">
+                  <strong>Specialist</strong>
+                  <span>Acts only on highlighted text. Executes one focused transformation within the selected region.</span>
+                </div>
+                <div className="docs-sidebar-archetype-item">
+                  <strong>Synonym Specialist</strong>
+                  <span>A Specialist subtype. Replaces highlighted words by reading the full sentence around them to preserve meaning and tone.</span>
+                </div>
+                <div className="docs-sidebar-archetype-item">
+                  <strong>Orchestrator</strong>
+                  <span>Higher-order monkey. Operates across the broader document context and delegates tasks to Specialist monkeys when multi-step coordination is needed.</span>
+                </div>
+                <div className="docs-sidebar-archetype-item">
+                  <strong>Critic</strong>
+                  <span>Persistent evaluator. Continuously analyzes writing quality across the document and scores clarity, diction, tone, professionalism, and structural strength.</span>
+                </div>
               </div>
             </>
           )}

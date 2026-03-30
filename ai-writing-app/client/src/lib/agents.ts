@@ -1,5 +1,29 @@
 import { apiFetch } from "./api";
 
+export const AGENT_ARCHETYPES = [
+  "Specialist",
+  "Synonym Specialist",
+  "Orchestrator",
+  "Critic",
+] as const;
+export type AgentArchetype = (typeof AGENT_ARCHETYPES)[number];
+
+export function archetypeDescription(role: string): string {
+  if (role === "Specialist") {
+    return "Acts only on highlighted text. Executes one focused transformation within the selected region.";
+  }
+  if (role === "Synonym Specialist") {
+    return "A Specialist subtype. Replaces highlighted words by reading the full sentence around them to preserve meaning and tone.";
+  }
+  if (role === "Orchestrator") {
+    return "Higher-order monkey. Operates across the broader document context and delegates tasks to Specialist monkeys when multi-step coordination is needed.";
+  }
+  if (role === "Critic") {
+    return "Persistent evaluator. Continuously analyzes writing quality across the document and scores clarity, diction, tone, professionalism, and structural strength.";
+  }
+  return "Acts only on highlighted text. Executes one focused transformation within the selected region.";
+}
+
 export interface AgentMeta {
   id: string;
   name: string;
@@ -68,7 +92,7 @@ export async function getAgent(id: string): Promise<AgentMeta | null> {
 
 export async function createAgent(partial?: {
   name?: string;
-  role?: string;
+  role?: AgentArchetype;
   strengths?: string;
   defaultPrompt?: string;
   avatar?: string;
@@ -77,7 +101,7 @@ export async function createAgent(partial?: {
     method: "POST",
     body: JSON.stringify({
       name: partial?.name?.trim() || "New monkey",
-      role: partial?.role ?? "Generalist",
+      role: partial?.role ?? "Specialist",
       strengths: partial?.strengths ?? "",
       avatar: partial?.avatar ?? null,
       defaultPrompt: partial?.defaultPrompt ?? "",

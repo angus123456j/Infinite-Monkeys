@@ -21,7 +21,7 @@ import AgentInvocationTimeline, {
 } from "./AgentInvocationTimeline";
 import type { WritingEffectId } from "./DocMenuBar";
 import { joinForward } from "@tiptap/pm/commands";
-import { getAgent } from "../lib/agents";
+import { getAgent, listAgents, type AgentMeta } from "../lib/agents";
 import { listContexts } from "../lib/contexts";
 import { extractSentenceContext } from "../lib/extractSentenceContext";
 import { apiFetch } from "../lib/api";
@@ -203,6 +203,14 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
     readStoredLlmProvider()
   );
 
+  // Orchestrator: build a proposed sequential chain of Specialist monkeys
+  const [orchestratorAgents, setOrchestratorAgents] = useState<AgentMeta[]>([]);
+  const [orchestratorInstruction, setOrchestratorInstruction] = useState("");
+  const [orchestratorChain, setOrchestratorChain] = useState<string[]>([]);
+  const [orchestratorIsProposing, setOrchestratorIsProposing] = useState(false);
+  const [orchestratorIsExecuting, setOrchestratorIsExecuting] = useState(false);
+  const [orchestratorError, setOrchestratorError] = useState<string | null>(null);
+
   useEffect(() => {
     try {
       localStorage.setItem(LLM_PROVIDER_STORAGE_KEY, llmProvider);
@@ -210,6 +218,31 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
       /* ignore */
     }
   }, [llmProvider]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listAgents()
+      .then((all) => {
+        if (cancelled) return;
+        setOrchestratorAgents(all);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setOrchestratorAgents([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const orchestratorSpecialists = orchestratorAgents.filter(
+    (a) => a.role === "Specialist" || a.role === "Synonym Specialist"
+  );
+
+  const orchestratorHasSelection =
+    !!editor &&
+    editor.state.selection &&
+    editor.state.selection.from !== editor.state.selection.to;
 
   useEffect(() => {
     if (editor && onEditorReady) onEditorReady(editor);
@@ -741,6 +774,283 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
     [llmProvider]
   );
 
+  const getSelectionInfo = useCallback(() => {
+    if (!editor) return null;
+    const doc = editor.state.doc;
+    const { from, to } = editor.state.selection;
+    if (from === to) return null;
+    const text = doc.textBetween(from, to, " ");
+    return { from, to, text };
+  }, [editor]);
+
+  const addOrchestratorStep = useCallback(() => {
+    if (orchestratorSpecialists.length === 0) return;
+    setOrchestratorChain((prev) => {
+      if (prev.length === 0) return [orchestratorSpecialists[0]!.id];
+      return [...prev, orchestratorSpecialists[0]!.id];
+    });
+  }, [orchestratorSpecialists]);
+
+  const removeOrchestratorStep = useCallback((idx: number) => {
+    setOrchestratorChain((prev) => prev.filter((_x, i) => i !== idx));
+  }, []);
+
+  const moveOrchestratorStep = useCallback((idx: number, delta: number) => {
+    setOrchestratorChain((prev) => {
+      const next = [...prev];
+      const to = idx + delta;
+      if (to < 0 || to >= next.length) return prev;
+      const tmp = next[idx]!;
+      next[idx] = next[to]!;
+      next[to] = tmp;
+      return next;
+    });
+  }, []);
+
+  const replaceOrchestratorStep = useCallback(
+    (idx: number, agentId: string) => {
+      setOrchestratorChain((prev) => prev.map((v, i) => (i === idx ? agentId : v)));
+    },
+    []
+  );
+
+  const handleOrchestratorPropose = useCallback(async () => {
+    if (!orchestratorHasSelection) {
+      setOrchestratorError("Select some text to orchestrate.");
+      return;
+    }
+    const sel = getSelectionInfo();
+    if (!sel) return;
+    setOrchestratorError(null);
+    setOrchestratorIsProposing(true);
+    try {
+      const instruction = (orchestratorInstruction.trim() || prompt.trim()).trim();
+      const resp = await apiFetch<{ sequence: string[] }>("/api/orchestrator/plan", {
+        method: "POST",
+        body: JSON.stringify({
+          text: sel.text,
+          prompt: instruction,
+          llmProvider,
+        }),
+      });
+
+      const seq = (resp.sequence ?? []).filter((id) =>
+        orchestratorSpecialists.some((a) => a.id === id)
+      );
+
+      if (seq.length === 0) {
+        setOrchestratorError("No valid sequence returned.");
+        setOrchestratorChain([]);
+        return;
+      }
+
+      // If user put Synonym Specialist later, move it to the first position.
+      const synonymIds = new Set(
+        orchestratorSpecialists
+          .filter((a) => a.name.toLowerCase().includes("synonym sensei") || a.name.toLowerCase().includes("synonym monkey"))
+          .map((a) => a.id)
+      );
+      const hasSynonym = seq.some((id) => synonymIds.has(id));
+      const reordered = hasSynonym
+        ? [
+            ...seq.filter((id) => synonymIds.has(id)),
+            ...seq.filter((id) => !synonymIds.has(id)),
+          ]
+        : seq;
+
+      setOrchestratorChain(reordered);
+    } catch (e: any) {
+      setOrchestratorError(e?.message ?? "Failed to propose sequence.");
+    } finally {
+      setOrchestratorIsProposing(false);
+    }
+  }, [
+    orchestratorHasSelection,
+    getSelectionInfo,
+    orchestratorInstruction,
+    prompt,
+    llmProvider,
+    orchestratorSpecialists,
+  ]);
+
+  const handleOrchestratorExecute = useCallback(async () => {
+    if (orchestratorChain.length === 0) {
+      setOrchestratorError("Add at least one monkey to the chain.");
+      return;
+    }
+    const sel = getSelectionInfo();
+    if (!sel) {
+      setOrchestratorError("Select some text to execute the chain.");
+      return;
+    }
+
+    const doc = editor!.state.doc;
+    const currentContextIds = selectedContextIds;
+    const trimmedPrompt = (orchestratorInstruction.trim() || prompt.trim()).trim();
+    const currentPrompt =
+      trimmedPrompt ||
+      "Rewrite this selection in the agent's voice, improving clarity, flow, and style.";
+
+    setOrchestratorIsExecuting(true);
+    setOrchestratorError(null);
+
+    // Before spacer insert (which can shift positions), capture sentence for Synonym Sensei.
+    const sentenceForSynonym = extractSentenceContext(doc, sel.from, sel.to);
+
+    const spacerInsertPos = computeSpacerInsertPos(doc, sel.to);
+
+    // Highlight + insert spacers.
+    editor!
+      .chain()
+      .focus()
+      .setTextSelection({ from: sel.from, to: sel.to })
+      .setHighlight({ color: HIGHLIGHT_COLOR })
+      .command(({ tr, state }) => {
+        const paragraphType = state.schema.nodes["paragraph"];
+        if (!paragraphType) return false;
+        let pos = spacerInsertPos;
+        for (let i = 0; i < INITIAL_SPACER_COUNT; i++) {
+          const para = paragraphType.create();
+          tr.insert(pos, para);
+          pos += 2;
+        }
+        return true;
+      })
+      .setTextSelection(sel.to)
+      .run();
+
+    // Pending rewrite entry for the full chain result.
+    const id = nextRewriteId++;
+    const monkeyId = randomMonkeyId();
+    const pending: PendingRewrite = {
+      id,
+      monkeyId,
+      from: sel.from,
+      to: sel.to,
+      originalText: sel.text,
+      prompt: currentPrompt,
+      rewriteText: null,
+      isLoading: true,
+      isRevealing: false,
+      error: null,
+      spacerFrom: spacerInsertPos,
+      spacerTo: spacerInsertPos + INITIAL_SPACER_COUNT * 2,
+    };
+
+    pendingRewritesRef.current = [...pendingRewritesRef.current, pending];
+    setPendingRewrites((prev) => [...prev, pending]);
+
+    try {
+      // Compute timeline context labels.
+      let contextLabels: string[] = [];
+      try {
+        const allCtx = await listContexts();
+        contextLabels = currentContextIds.map(
+          (cid) => allCtx.find((c) => c.id === cid)?.title ?? cid
+        );
+      } catch {
+        contextLabels = currentContextIds.slice();
+      }
+
+      const synonymIds = new Set(
+        orchestratorSpecialists
+          .filter(
+            (a) =>
+              a.name.toLowerCase().includes("synonym sensei") ||
+              a.name.toLowerCase().includes("synonym monkey")
+          )
+          .map((a) => a.id)
+      );
+      const hasSynonym = orchestratorChain.some((id) => synonymIds.has(id));
+      const chainForExec = hasSynonym
+        ? [
+            ...orchestratorChain.filter((id) => synonymIds.has(id)),
+            ...orchestratorChain.filter((id) => !synonymIds.has(id)),
+          ]
+        : orchestratorChain;
+
+      setInvocationLog((prev) => [
+        ...prev,
+        {
+          id,
+          at: Date.now(),
+          agentId: chainForExec[0] ?? null,
+          agentName: "Orchestrator",
+          contextLabels,
+          userPrompt: currentPrompt,
+          apiPromptSent: currentPrompt,
+          originalText: sel.text,
+          response: null,
+          error: null,
+          status: "loading",
+        },
+      ]);
+
+      let currentText = sel.text;
+      for (const agentId of chainForExec) {
+        currentText = await fetchRewrite(
+          currentText,
+          currentPrompt,
+          agentId,
+          currentContextIds,
+          sentenceForSynonym
+        );
+      }
+
+      setPendingRewrites((prev) =>
+        prev.map((rw) =>
+          rw.id === id
+            ? { ...rw, rewriteText: currentText, isLoading: false, isRevealing: true }
+            : rw
+        )
+      );
+      pendingRewritesRef.current = pendingRewritesRef.current.map((rw) =>
+        rw.id === id
+          ? { ...rw, rewriteText: currentText, isLoading: false, isRevealing: true }
+          : rw
+      );
+
+      setInvocationLog((prev) =>
+        prev.map((entry) =>
+          entry.id === id
+            ? { ...entry, status: "done" as const, response: currentText }
+            : entry
+        )
+      );
+    } catch (err: any) {
+      const msg = err?.message ?? "Failed to execute orchestrator chain";
+      setPendingRewrites((prev) =>
+        prev.map((rw) =>
+          rw.id === id
+            ? { ...rw, error: msg, isLoading: false }
+            : rw
+        )
+      );
+      pendingRewritesRef.current = pendingRewritesRef.current.map((rw) =>
+        rw.id === id ? { ...rw, error: msg, isLoading: false } : rw
+      );
+      setInvocationLog((prev) =>
+        prev.map((entry) =>
+          entry.id === id
+            ? { ...entry, status: "error" as const, error: msg }
+            : entry
+        )
+      );
+      setOrchestratorError(msg);
+    } finally {
+      setOrchestratorIsExecuting(false);
+    }
+  }, [
+    editor,
+    orchestratorChain,
+    orchestratorInstruction,
+    prompt,
+    selectedContextIds,
+    getSelectionInfo,
+    fetchRewrite,
+    orchestratorChain.length,
+  ]);
+
   // Handle overlay submit — close overlay, highlight text, insert spacers, start async API call
   const handleOverlaySubmit = useCallback(async () => {
     if (!editor || !storedSelection) return;
@@ -1030,11 +1340,135 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
         onLlmProviderChange={setLlmProvider}
       />
       <div className="editor-page-area">
-        <div className="editor-document-center">
-        <div
-          className="writing-effect-wrapper"
-          data-writing-effect={writingEffect ?? "none"}
+        <aside
+          className="editor-orchestrator-rail"
+          aria-label="Orchestrator"
         >
+          <div className="editor-orchestrator-title">Orchestrator</div>
+
+          <div className="editor-orchestrator-block">
+            <div className="editor-orchestrator-subtitle">
+              Build a sequential specialist chain. Requires a non-empty selection.
+            </div>
+
+            <textarea
+              className="editor-orchestrator-textarea"
+              value={orchestratorInstruction}
+              onChange={(e) => setOrchestratorInstruction(e.target.value)}
+              placeholder="Instruction for each monkey in the chain (optional)"
+            />
+
+            <div className="editor-orchestrator-actions">
+              <button
+                type="button"
+                className={`editor-orchestrator-btn${orchestratorIsProposing ? " primary" : ""}`}
+                onClick={handleOrchestratorPropose}
+                disabled={orchestratorIsExecuting || orchestratorIsProposing}
+              >
+                {orchestratorIsProposing ? "Scanning..." : "Propose sequence"}
+              </button>
+            </div>
+
+            <div className="editor-orchestrator-chain">
+              {orchestratorChain.length === 0 ? (
+                <div className="editor-orchestrator-muted">
+                  No chain yet.
+                </div>
+              ) : (
+                orchestratorChain.map((stepAgentId, idx) => {
+                  return (
+                    <div key={`${stepAgentId}-${idx}`} className="editor-orchestrator-step">
+                      <div className="editor-orchestrator-step-head">
+                        <span className="editor-orchestrator-step-label">Step {idx + 1}</span>
+                        <div className="editor-orchestrator-step-controls">
+                          <button
+                            type="button"
+                            className="editor-orchestrator-icon-btn"
+                            onClick={() => moveOrchestratorStep(idx, -1)}
+                            disabled={idx === 0 || orchestratorIsExecuting || orchestratorIsProposing}
+                            aria-label="Move up"
+                            title="Move up"
+                          >
+                            ↑
+                          </button>
+                          <button
+                            type="button"
+                            className="editor-orchestrator-icon-btn"
+                            onClick={() => moveOrchestratorStep(idx, +1)}
+                            disabled={
+                              idx === orchestratorChain.length - 1 || orchestratorIsExecuting || orchestratorIsProposing
+                            }
+                            aria-label="Move down"
+                            title="Move down"
+                          >
+                            ↓
+                          </button>
+                          <button
+                            type="button"
+                            className="editor-orchestrator-icon-btn"
+                            onClick={() => removeOrchestratorStep(idx)}
+                            disabled={orchestratorIsExecuting || orchestratorIsProposing}
+                            aria-label="Remove"
+                            title="Remove"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      </div>
+
+                      <select
+                        className="editor-orchestrator-step-select"
+                        value={stepAgentId}
+                        onChange={(e) => replaceOrchestratorStep(idx, e.target.value)}
+                        disabled={orchestratorIsExecuting || orchestratorIsProposing}
+                      >
+                        {orchestratorSpecialists.map((a) => (
+                          <option key={a.id} value={a.id}>
+                            {a.name} ({a.role})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {orchestratorError && <div className="editor-orchestrator-error">{orchestratorError}</div>}
+
+            <div className="editor-orchestrator-actions">
+              <button
+                type="button"
+                className="editor-orchestrator-btn"
+                onClick={addOrchestratorStep}
+                disabled={orchestratorIsExecuting || orchestratorIsProposing || orchestratorSpecialists.length === 0}
+              >
+                Add monkey
+              </button>
+              <button
+                type="button"
+                className="editor-orchestrator-btn primary"
+                onClick={handleOrchestratorExecute}
+                disabled={
+                  orchestratorIsExecuting ||
+                  orchestratorIsProposing ||
+                  orchestratorChain.length === 0 ||
+                  !orchestratorHasSelection
+                }
+                title={!orchestratorHasSelection ? "Select some text to orchestrate" : "Execute sequentially"}
+              >
+                Execute
+              </button>
+            </div>
+          </div>
+        </aside>
+
+        <div className="editor-main-column">
+          <div className="editor-document-center">
+          <div
+            className="writing-effect-wrapper"
+            data-writing-effect={writingEffect ?? "none"}
+          >
           <div
             ref={pageRef}
             className="pages-container"
@@ -1145,10 +1579,11 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
             );
           })}
         </div>
+          </div>
+          </div>
         </div>
         </div>
         <AgentInvocationTimeline entries={invocationLog} />
-      </div>
       <Overlay
         isOpen={isOverlayOpen}
         onClose={handleOverlayClose}
