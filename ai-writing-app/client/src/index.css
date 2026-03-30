@@ -3897,6 +3897,55 @@ body.full-screen .agent-invocation-timeline {
   background: #fff;
 }
 
+/* Nested “refine this slice of the suggestion” block (Cmd+K on selected text in the card) */
+.inline-suggestion-nested {
+  margin-top: 10px;
+  padding: 8px 0 0 14px;
+  border-left: 3px solid rgba(26, 115, 232, 0.45);
+}
+
+/* Split parent paragraph: text before → highlighted slice → refine UI → rest of paragraph */
+.inline-suggestion-content--split {
+  display: block;
+  width: 100%;
+  font-style: italic;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.inline-suggestion-refine-anchor {
+  font-style: italic;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+  text-decoration-color: rgba(26, 115, 232, 0.65);
+  background: rgba(26, 115, 232, 0.1);
+  border-radius: 3px;
+  padding: 1px 3px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.inline-suggestion-fragment-after {
+  display: block;
+  margin-top: 2px;
+  width: 100%;
+}
+
+/* Refine card inserted inline under the anchor (pushes following text down) */
+.inline-suggestion-nested--inline {
+  margin-top: 8px;
+  margin-bottom: 10px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.inline-suggestion-text--nested-refine {
+  padding-top: 0;
+}
+
 /* Compact single-line layout for short rewrites (e.g. a word or phrase) so the overlay doesn't block text below */
 .inline-suggestion-compact {
   display: flex;
@@ -4601,6 +4650,11 @@ body.full-screen .agent-invocation-timeline {
 [data-theme="dark"] .inline-suggestion-text {
   color: #ccc;
   text-decoration-color: rgba(255, 255, 255, 0.2);
+}
+
+[data-theme="dark"] .inline-suggestion-refine-anchor {
+  background: rgba(100, 160, 255, 0.14);
+  text-decoration-color: rgba(130, 180, 255, 0.75);
 }
 
 [data-theme="dark"] .inline-suggestion-label {

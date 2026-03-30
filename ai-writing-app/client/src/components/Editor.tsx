@@ -25,7 +25,10 @@ import { getAgent, listAgents, type AgentMeta } from "../lib/agents";
 import { listContexts } from "../lib/contexts";
 import { extractSentenceContext } from "../lib/extractSentenceContext";
 import { apiFetch } from "../lib/api";
-import { extraSpacerParagraphsNeeded } from "../lib/pretextRewriteLayout";
+import {
+  extraSpacerParagraphsNeeded,
+  maxOverlapRepairExtraParas,
+} from "../lib/pretextRewriteLayout";
 
 /** Fixed 50 lines per page. Line height in px (11pt × 1.15 ≈ 17). */
 const LINES_PER_PAGE = 50;
@@ -118,6 +121,22 @@ function computeSpacerInsertPos(doc: any, selTo: number): number {
   return selTo + 1;
 }
 
+/** Character offsets of a DOM range within an element's text content (for selections inside suggestion cards). */
+function getTextOffsetsInElement(
+  el: HTMLElement,
+  range: Range
+): { start: number; end: number } | null {
+  if (!el.contains(range.commonAncestorContainer)) return null;
+  const pre = range.cloneRange();
+  pre.selectNodeContents(el);
+  pre.setEnd(range.startContainer, range.startOffset);
+  const start = pre.toString().length;
+  pre.setEnd(range.endContainer, range.endOffset);
+  const end = pre.toString().length;
+  if (start > end) return null;
+  return { start, end };
+}
+
 /** Merge paragraphs split by spacer `<p>` inserts so the sentence flows in one block again. */
 function joinSplitParagraphsAfterSpacerRemoval(editor: TiptapEditor) {
   const st0 = editor.state;
@@ -137,6 +156,10 @@ function joinSplitParagraphsAfterSpacerRemoval(editor: TiptapEditor) {
 
 interface PendingRewrite {
   id: number;
+  /** If set, this entry refines a slice of the parent card’s `rewriteText` (not the document). */
+  parentId?: number;
+  parentReplaceStart?: number;
+  parentReplaceEnd?: number;
   monkeyId: string;
   from: number;
   to: number;
@@ -149,6 +172,16 @@ interface PendingRewrite {
   spacerFrom: number;
   spacerTo: number;
 }
+
+type OverlayDocSelection = { kind: "doc"; from: number; to: number };
+type OverlaySuggestionSelection = {
+  kind: "suggestion";
+  parentRewriteId: number;
+  startOffset: number;
+  endOffset: number;
+  selectedText: string;
+};
+type OverlaySelection = OverlayDocSelection | OverlaySuggestionSelection;
 
 /** Synonym specialist agents: seeded "Synonym Sensei Monkey" or common renames like "Synonym Monkey". */
 function isSynonymSpecialistAgentName(name: string): boolean {
@@ -251,10 +284,9 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
 
   // Overlay state
   const [isOverlayOpen, setIsOverlayOpen] = useState(false);
-  const [storedSelection, setStoredSelection] = useState<{
-    from: number;
-    to: number;
-  } | null>(null);
+  const [storedSelection, setStoredSelection] = useState<OverlaySelection | null>(
+    null
+  );
   const [prompt, setPrompt] = useState("");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [selectedContextIds, setSelectedContextIds] = useState<string[]>([]);
@@ -484,6 +516,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
       const pageRect = pageRef.current.getBoundingClientRect();
 
       for (const rw of current) {
+        if (rw.parentId != null) continue;
         try {
           const docSize = editor.state.doc.content.size;
           const safeEnd = Math.min(rw.to, docSize);
@@ -513,6 +546,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
       adjusting = true;
 
       for (const rw of pendingRewritesRef.current) {
+        if (rw.parentId != null) continue;
         const el = suggestionElRefs.current[rw.id];
         if (!el) continue;
 
@@ -526,20 +560,17 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
 
           const contentAfter = editor.view.coordsAtPos(safePos, 1);
           const overlap = suggestionRect.bottom - contentAfter.top;
-          const approxRewriteLen =
-            (rw.rewriteText?.length ?? rw.originalText.length ?? 0);
-
           // If the suggestion overlaps the content that follows it, insert some
           // extra spacer paragraphs after spacerTo so the document below is
           // pushed down instead of being covered by the overlay.
           //
           // We allow multiple small nudges per rewrite so that as the rewritten
           // text grows line‑by‑line, we keep adding just enough space rather
-          // than guessing all at once. Cap extra paras so short rewrites don't
-          // add too much blank space; long rewrites can use more.
+          // than guessing all at once. The cap scales with Pretext-predicted
+          // card height so long multi-line rewrites are not stuck after a few px.
           const currentExtra = spacerAdjustedRef.current[rw.id] ?? 0;
-          const isShortRewrite = approxRewriteLen < 120;
-          const MAX_EXTRA_PARAS = isShortRewrite ? 3 : 8;
+          const rewriteForMeasure = rw.rewriteText ?? rw.originalText ?? "";
+          const MAX_EXTRA_PARAS = maxOverlapRepairExtraParas(rewriteForMeasure);
 
           if (overlap > 0 && currentExtra < MAX_EXTRA_PARAS) {
             const pixelsPerPara = LINE_HEIGHT_PX + 4;
@@ -572,8 +603,6 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
             );
             pendingRewritesRef.current = updated;
             setPendingRewrites(updated);
-
-            break;
           }
         } catch {
           // position may be invalid during transitions
@@ -622,7 +651,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
           const currentRef = pendingRewritesRef.current.find(
             (r) => r.id === rw.id
           );
-          if (currentRef) {
+          if (currentRef && currentRef.parentId == null) {
             const currentSpacers =
               (currentRef.spacerTo - currentRef.spacerFrom) / 2;
             const extraNeeded = extraSpacerParagraphsNeeded(
@@ -693,25 +722,79 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
     };
   }, []);
 
-  // Handle Cmd+K to open overlay — does NOT dismiss existing rewrites
+  // Handle Cmd+K to open overlay — doc selection or a selection inside an inline suggestion (nested rewrite)
   useEffect(() => {
     if (!editor) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        const domSel = window.getSelection();
+        if (domSel && !domSel.isCollapsed && domSel.rangeCount > 0) {
+          const range = domSel.getRangeAt(0);
+          const anchorEl =
+            range.commonAncestorContainer.nodeType === Node.TEXT_NODE
+              ? (range.commonAncestorContainer.parentElement as HTMLElement | null)
+              : (range.commonAncestorContainer as HTMLElement);
+          const contentHost = anchorEl?.closest?.(
+            ".inline-suggestion-content"
+          ) as HTMLElement | null;
+          if (contentHost) {
+            e.preventDefault();
+            const card = contentHost.closest("[data-rewrite-id]");
+            const rwIdAttr = card?.getAttribute("data-rewrite-id");
+            const rwId = rwIdAttr ? Number(rwIdAttr) : NaN;
+            const offsets = getTextOffsetsInElement(contentHost, range);
+            if (
+              !Number.isFinite(rwId) ||
+              !offsets ||
+              offsets.start >= offsets.end
+            ) {
+              return;
+            }
+            const parentRw = pendingRewritesRef.current.find(
+              (r) => r.id === rwId
+            );
+            if (
+              !parentRw ||
+              parentRw.parentId != null ||
+              parentRw.isLoading ||
+              !parentRw.rewriteText ||
+              parentRw.isRevealing
+            ) {
+              return;
+            }
+            if (pendingRewritesRef.current.some((c) => c.parentId === rwId)) {
+              return;
+            }
+            const inner = parentRw.rewriteText;
+            const selectedText = inner.slice(offsets.start, offsets.end);
+            if (!selectedText.trim()) return;
+
+            setStoredSelection({
+              kind: "suggestion",
+              parentRewriteId: rwId,
+              startOffset: offsets.start,
+              endOffset: offsets.end,
+              selectedText,
+            });
+            setIsOverlayOpen(true);
+            setPrompt("");
+            return;
+          }
+        }
+
         e.preventDefault();
 
         const { from, to } = editor.state.selection;
-        if (from === to) return; // Need a selection
+        if (from === to) return;
 
-        // Highlight the selected text immediately
         editor
           .chain()
           .setTextSelection({ from, to })
           .setHighlight({ color: HIGHLIGHT_COLOR })
           .run();
 
-        setStoredSelection({ from, to });
+        setStoredSelection({ kind: "doc", from, to });
         setIsOverlayOpen(true);
         setPrompt("");
       }
@@ -728,7 +811,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
     setIsOverlayOpen(false);
     setPrompt("");
 
-    if (editor && storedSelection) {
+    if (editor && storedSelection?.kind === "doc") {
       editor
         .chain()
         .setTextSelection({
@@ -738,6 +821,10 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
         .unsetHighlight()
         .focus()
         .run();
+    } else if (storedSelection?.kind === "suggestion") {
+      requestAnimationFrame(() => {
+        revealContentRefs.current[storedSelection.parentRewriteId]?.focus();
+      });
     }
 
     setStoredSelection(null);
@@ -815,7 +902,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
     (rwId: number, rewriteText: string) => {
       if (!editor) return;
       const p = pendingRewritesRef.current.find((r) => r.id === rwId);
-      if (!p) return;
+      if (!p || p.parentId != null) return;
       const currentCount = (p.spacerTo - p.spacerFrom) / 2;
       const extra = extraSpacerParagraphsNeeded(rewriteText, currentCount);
       if (extra <= 0) return;
@@ -1092,10 +1179,9 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
     insertPretextRevealSpacers,
   ]);
 
-  // Handle overlay submit — close overlay, highlight text, insert spacers, start async API call
+  // Handle overlay submit — doc selection (highlight + spacers) or nested selection inside a suggestion card
   const handleOverlaySubmit = useCallback(async () => {
-    if (!editor || !storedSelection) return;
-    const doc = editor.state.doc;
+    if (!storedSelection) return;
     const currentAgentId = selectedAgentId;
     const currentContextIds = selectedContextIds;
     const trimmedPrompt = prompt.trim();
@@ -1104,13 +1190,141 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
       (currentAgentId
         ? "Rewrite this selection in the agent's voice, improving clarity, flow, and style."
         : "Rewrite this selection to improve clarity, flow, and style.");
-    const sel = { ...storedSelection };
 
+    if (storedSelection.kind === "suggestion") {
+      const sug = storedSelection;
+      const parentRw = pendingRewritesRef.current.find(
+        (r) => r.id === sug.parentRewriteId
+      );
+      if (!parentRw || parentRw.parentId != null) return;
+      if (pendingRewritesRef.current.some((c) => c.parentId === sug.parentRewriteId))
+        return;
+
+      setIsOverlayOpen(false);
+      setPrompt("");
+      setStoredSelection(null);
+
+      const id = nextRewriteId++;
+      const monkeyId = randomMonkeyId();
+      const pending: PendingRewrite = {
+        id,
+        parentId: sug.parentRewriteId,
+        parentReplaceStart: sug.startOffset,
+        parentReplaceEnd: sug.endOffset,
+        monkeyId,
+        from: parentRw.from,
+        to: parentRw.to,
+        originalText: sug.selectedText,
+        prompt: currentPrompt,
+        rewriteText: null,
+        isLoading: true,
+        isRevealing: false,
+        error: null,
+        spacerFrom: parentRw.spacerFrom,
+        spacerTo: parentRw.spacerTo,
+      };
+
+      pendingRewritesRef.current = [...pendingRewritesRef.current, pending];
+      setPendingRewrites((prev) => [...prev, pending]);
+
+      try {
+        const agentMeta = currentAgentId ? await getAgent(currentAgentId) : null;
+        const agentName =
+          agentMeta?.name ?? (currentAgentId ? "Unknown agent" : "No agent");
+
+        let contextLabels: string[] = [];
+        try {
+          const allCtx = await listContexts();
+          contextLabels = currentContextIds.map(
+            (cid) => allCtx.find((c) => c.id === cid)?.title ?? cid
+          );
+        } catch {
+          contextLabels = currentContextIds.slice();
+        }
+
+        setInvocationLog((prev) => [
+          ...prev,
+          {
+            id,
+            at: Date.now(),
+            agentId: currentAgentId,
+            agentName,
+            contextLabels,
+            userPrompt: trimmedPrompt,
+            apiPromptSent: currentPrompt,
+            originalText: sug.selectedText,
+            response: null,
+            error: null,
+            status: "loading",
+          },
+        ]);
+
+        const result = await fetchRewrite(
+          sug.selectedText,
+          currentPrompt,
+          currentAgentId,
+          currentContextIds,
+          null
+        );
+
+        setPendingRewrites((prev) =>
+          prev.map((rw) =>
+            rw.id === id
+              ? {
+                  ...rw,
+                  rewriteText: result,
+                  isLoading: false,
+                  isRevealing: true,
+                }
+              : rw
+          )
+        );
+        pendingRewritesRef.current = pendingRewritesRef.current.map((rw) =>
+          rw.id === id
+            ? {
+                ...rw,
+                rewriteText: result,
+                isLoading: false,
+                isRevealing: true,
+              }
+            : rw
+        );
+
+        setInvocationLog((prev) =>
+          prev.map((entry) =>
+            entry.id === id
+              ? { ...entry, status: "done" as const, response: result }
+              : entry
+          )
+        );
+      } catch (err: any) {
+        const msg = err.message || "Failed to generate rewrite";
+        setPendingRewrites((prev) =>
+          prev.map((rw) =>
+            rw.id === id ? { ...rw, error: msg, isLoading: false } : rw
+          )
+        );
+        pendingRewritesRef.current = pendingRewritesRef.current.map((rw) =>
+          rw.id === id ? { ...rw, error: msg, isLoading: false } : rw
+        );
+        setInvocationLog((prev) => {
+          if (!prev.some((e) => e.id === id)) return prev;
+          return prev.map((entry) =>
+            entry.id === id
+              ? { ...entry, status: "error" as const, error: msg }
+              : entry
+          );
+        });
+      }
+      return;
+    }
+
+    if (!editor) return;
+    const doc = editor.state.doc;
+    const sel = storedSelection;
     const selectedText = doc.textBetween(sel.from, sel.to, " ");
-    // Before spacer insert (which can shift positions), capture sentence for Synonym Sensei.
     const sentenceForSynonym = extractSentenceContext(doc, sel.from, sel.to);
 
-    // Close overlay immediately
     setIsOverlayOpen(false);
     setPrompt("");
     setStoredSelection(null);
@@ -1293,19 +1507,53 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
     insertPretextRevealSpacers,
   ]);
 
-  // Accept a specific inline suggestion — remove spacers, replace highlighted text
+  // Accept a specific inline suggestion — merge nested into parent, or apply root to document
   const handleSuggestionAccept = useCallback(
     (rewriteId: number) => {
-      // Read from ref to get the latest (possibly user-edited) text
       const current = pendingRewritesRef.current.find(
         (rw) => rw.id === rewriteId
       );
-      if (!editor || !current?.rewriteText) return;
+      if (!current?.rewriteText) return;
+
+      if (current.parentId != null) {
+        const pid = current.parentId;
+        const start = current.parentReplaceStart!;
+        const end = current.parentReplaceEnd!;
+        const parent = pendingRewritesRef.current.find((r) => r.id === pid);
+        if (!parent?.rewriteText) return;
+
+        const merged =
+          parent.rewriteText.slice(0, start) +
+          current.rewriteText +
+          parent.rewriteText.slice(end);
+
+        pendingRewritesRef.current = pendingRewritesRef.current
+          .filter((r) => r.id !== rewriteId)
+          .map((r) => (r.id === pid ? { ...r, rewriteText: merged } : r));
+        setPendingRewrites(pendingRewritesRef.current.slice());
+
+        delete suggestionElRefs.current[rewriteId];
+        delete revealContentRefs.current[rewriteId];
+        if (revealTimersRef.current[rewriteId]) {
+          clearInterval(revealTimersRef.current[rewriteId]);
+          delete revealTimersRef.current[rewriteId];
+        }
+        delete spacerAdjustedRef.current[rewriteId];
+        const mergedEl = revealContentRefs.current[pid];
+        if (mergedEl) {
+          delete mergedEl.dataset.initialized;
+        }
+        return;
+      }
+
+      if (!editor) return;
+      if (pendingRewritesRef.current.some((c) => c.parentId === rewriteId)) {
+        return;
+      }
 
       const { from, to, spacerFrom, spacerTo } = current;
       const rewriteText = current.rewriteText;
 
-      // Remove from array BEFORE editor changes
       pendingRewritesRef.current = pendingRewritesRef.current.filter(
         (rw) => rw.id !== rewriteId
       );
@@ -1342,32 +1590,57 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
     [editor]
   );
 
-  // Dismiss/reject a specific inline suggestion — remove spacers & unhighlight
+  // Dismiss/reject — nested drops only the child; root also removes nested children and document highlight
   const handleSuggestionReject = useCallback(
     (rewriteId: number) => {
       const current = pendingRewritesRef.current.find(
         (rw) => rw.id === rewriteId
       );
-      if (!editor || !current) return;
+      if (!current) return;
+
+      if (current.parentId != null) {
+        pendingRewritesRef.current = pendingRewritesRef.current.filter(
+          (rw) => rw.id !== rewriteId
+        );
+        setPendingRewrites(pendingRewritesRef.current.slice());
+        delete suggestionElRefs.current[rewriteId];
+        delete revealContentRefs.current[rewriteId];
+        if (revealTimersRef.current[rewriteId]) {
+          clearInterval(revealTimersRef.current[rewriteId]);
+          delete revealTimersRef.current[rewriteId];
+        }
+        delete spacerAdjustedRef.current[rewriteId];
+        return;
+      }
+
+      if (!editor) return;
 
       const { from, to, spacerFrom, spacerTo } = current;
+      const childIds = pendingRewritesRef.current
+        .filter((r) => r.parentId === rewriteId)
+        .map((r) => r.id);
 
-      // Remove from array BEFORE editor changes
       pendingRewritesRef.current = pendingRewritesRef.current.filter(
-        (rw) => rw.id !== rewriteId
+        (rw) => rw.parentId !== rewriteId && rw.id !== rewriteId
       );
-      setPendingRewrites((prev) => prev.filter((rw) => rw.id !== rewriteId));
+      setPendingRewrites(pendingRewritesRef.current.slice());
       setSuggestionPositions((prev) => {
         const next = { ...prev };
         delete next[rewriteId];
+        for (const cid of childIds) delete next[cid];
         return next;
       });
-      delete suggestionElRefs.current[rewriteId];
-      delete revealContentRefs.current[rewriteId];
-      if (revealTimersRef.current[rewriteId]) {
-        clearInterval(revealTimersRef.current[rewriteId]);
-        delete revealTimersRef.current[rewriteId];
-      }
+      const cleanupId = (id: number) => {
+        delete suggestionElRefs.current[id];
+        delete revealContentRefs.current[id];
+        if (revealTimersRef.current[id]) {
+          clearInterval(revealTimersRef.current[id]);
+          delete revealTimersRef.current[id];
+        }
+        delete spacerAdjustedRef.current[id];
+      };
+      cleanupId(rewriteId);
+      for (const cid of childIds) cleanupId(cid);
 
       editor
         .chain()
@@ -1536,104 +1809,282 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
               <EditorContent editor={editor} />
             </div>
 
-          {/* Inline suggestions — one per pending rewrite */}
-          {pendingRewrites.map((rw) => {
-            const pos = suggestionPositions[rw.id];
-            if (!pos) return null;
+          {/* Inline suggestions — root rewrites only; nested refinements render inside the parent card */}
+          {pendingRewrites
+            .filter((rw) => rw.parentId == null)
+            .map((rw) => {
+              const pos = suggestionPositions[rw.id];
+              if (!pos) return null;
 
-            return (
-              <div
-                key={rw.id}
-                ref={(el) => {
-                  suggestionElRefs.current[rw.id] = el;
-                }}
-                className={`inline-suggestion${rw.rewriteText && rw.rewriteText.length <= 60 ? " inline-suggestion-compact" : ""}`}
-                style={{
-                  position: "absolute",
-                  top: `${pos.top}px`,
-                  left: 0,
-                  right: 0,
-                }}
-              >
-                {rw.isLoading && (
-                  <div className="inline-suggestion-loading">
-                    <div className="inline-suggestion-spinner" />
-                    <span>Monkey {rw.monkeyId} is typing...</span>
-                  </div>
-                )}
-                {rw.error && (
-                  <div className="inline-suggestion-error">
-                    <span>{rw.error}</span>
-                    <button
-                      className="inline-suggestion-dismiss"
-                      onClick={() => handleSuggestionReject(rw.id)}
-                    >
-                      Dismiss
-                    </button>
-                  </div>
-                )}
-                {rw.rewriteText && (
-                  <>
-                    <div className="inline-suggestion-text">
-                      <span className="inline-suggestion-arrow">↪</span>
-                      <span className="inline-suggestion-label">
-                        Rewritten:
-                      </span>{" "}
-                      <em
-                        className="inline-suggestion-content"
-                        contentEditable={!rw.isRevealing}
-                        suppressContentEditableWarning
-                        spellCheck={false}
-                        ref={(el) => {
-                          revealContentRefs.current[rw.id] = el;
-                          if (
-                            el &&
-                            !rw.isRevealing &&
-                            el.dataset.initialized !== "true"
-                          ) {
-                            el.innerText = rw.rewriteText!;
-                            el.dataset.initialized = "true";
-                          }
-                        }}
-                        onInput={(e) => {
-                          if (rw.isRevealing) return;
-                          const newText = (e.target as HTMLElement).innerText;
-                          const idx = pendingRewritesRef.current.findIndex(
-                            (r) => r.id === rw.id
-                          );
-                          if (idx !== -1) {
-                            const existing = pendingRewritesRef.current[idx];
-                            if (existing) {
-                              pendingRewritesRef.current[idx] = {
-                                ...existing,
-                                rewriteText: newText,
-                              };
-                            }
-                          }
-                        }}
-                      />
+              const nestedChildren = pendingRewrites.filter(
+                (c) => c.parentId === rw.id
+              );
+              const hasNested = nestedChildren.length > 0;
+              const nestedChild = nestedChildren[0];
+              const splitRanges =
+                hasNested && nestedChild && rw.rewriteText
+                  ? (() => {
+                      const t = rw.rewriteText;
+                      const s = Math.max(
+                        0,
+                        Math.min(
+                          nestedChild.parentReplaceStart ?? 0,
+                          t.length
+                        )
+                      );
+                      const e = Math.max(
+                        s,
+                        Math.min(nestedChild.parentReplaceEnd ?? 0, t.length)
+                      );
+                      return {
+                        before: t.slice(0, s),
+                        anchor: t.slice(s, e),
+                        after: t.slice(e),
+                      };
+                    })()
+                  : null;
+
+              return (
+                <div
+                  key={rw.id}
+                  data-rewrite-id={rw.id}
+                  ref={(el) => {
+                    suggestionElRefs.current[rw.id] = el;
+                  }}
+                  className={`inline-suggestion${rw.rewriteText && rw.rewriteText.length <= 60 && !hasNested ? " inline-suggestion-compact" : ""}`}
+                  style={{
+                    position: "absolute",
+                    top: `${pos.top}px`,
+                    left: 0,
+                    right: 0,
+                  }}
+                >
+                  {rw.isLoading && (
+                    <div className="inline-suggestion-loading">
+                      <div className="inline-suggestion-spinner" />
+                      <span>Monkey {rw.monkeyId} is typing...</span>
                     </div>
-                    {!rw.isRevealing && (
-                      <div className="inline-suggestion-actions">
-                        <button
-                          className="inline-suggestion-btn accept"
-                          onClick={() => handleSuggestionAccept(rw.id)}
-                        >
-                          ✓ Accept
-                        </button>
-                        <button
-                          className="inline-suggestion-btn reject"
-                          onClick={() => handleSuggestionReject(rw.id)}
-                        >
-                          ✕ Reject
-                        </button>
+                  )}
+                  {rw.error && (
+                    <div className="inline-suggestion-error">
+                      <span>{rw.error}</span>
+                      <button
+                        className="inline-suggestion-dismiss"
+                        onClick={() => handleSuggestionReject(rw.id)}
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  )}
+                  {rw.rewriteText && (
+                    <>
+                      <div className="inline-suggestion-text">
+                        <span className="inline-suggestion-arrow">↪</span>
+                        <span className="inline-suggestion-label">
+                          Rewritten:
+                        </span>{" "}
+                        {!splitRanges ? (
+                          <em
+                            className="inline-suggestion-content"
+                            contentEditable={!rw.isRevealing && !hasNested}
+                            suppressContentEditableWarning
+                            spellCheck={false}
+                            ref={(el) => {
+                              revealContentRefs.current[rw.id] = el;
+                              if (
+                                el &&
+                                !rw.isRevealing &&
+                                !hasNested &&
+                                el.dataset.initialized !== "true"
+                              ) {
+                                el.innerText = rw.rewriteText!;
+                                el.dataset.initialized = "true";
+                              }
+                            }}
+                            onInput={(e) => {
+                              if (rw.isRevealing || hasNested) return;
+                              const newText = (e.target as HTMLElement)
+                                .innerText;
+                              const idx = pendingRewritesRef.current.findIndex(
+                                (r) => r.id === rw.id
+                              );
+                              if (idx !== -1) {
+                                const existing = pendingRewritesRef.current[idx];
+                                if (existing) {
+                                  pendingRewritesRef.current[idx] = {
+                                    ...existing,
+                                    rewriteText: newText,
+                                  };
+                                }
+                              }
+                            }}
+                          />
+                        ) : (
+                          <div
+                            key={`split-${rw.id}-${nestedChild?.id}`}
+                            className="inline-suggestion-content inline-suggestion-content--split"
+                            ref={(el) => {
+                              revealContentRefs.current[rw.id] = el;
+                            }}
+                          >
+                            {splitRanges.before ? (
+                              <span className="inline-suggestion-fragment">
+                                {splitRanges.before}
+                              </span>
+                            ) : null}
+                            {splitRanges.anchor ? (
+                              <span className="inline-suggestion-refine-anchor">
+                                {splitRanges.anchor}
+                              </span>
+                            ) : null}
+                            {nestedChild ? (
+                              <div
+                                className="inline-suggestion-nested inline-suggestion-nested--inline"
+                                data-rewrite-id={nestedChild.id}
+                              >
+                                {nestedChild.isLoading && (
+                                  <div className="inline-suggestion-loading">
+                                    <div className="inline-suggestion-spinner" />
+                                    <span>
+                                      Monkey {nestedChild.monkeyId} is typing...
+                                    </span>
+                                  </div>
+                                )}
+                                {nestedChild.error && (
+                                  <div className="inline-suggestion-error">
+                                    <span>{nestedChild.error}</span>
+                                    <button
+                                      type="button"
+                                      className="inline-suggestion-dismiss"
+                                      onClick={() =>
+                                        handleSuggestionReject(nestedChild.id)
+                                      }
+                                    >
+                                      Dismiss
+                                    </button>
+                                  </div>
+                                )}
+                                {nestedChild.rewriteText && (
+                                  <>
+                                    <div className="inline-suggestion-text inline-suggestion-text--nested-refine">
+                                      <span className="inline-suggestion-arrow">
+                                        ↪
+                                      </span>
+                                      <span className="inline-suggestion-label">
+                                        Refine:
+                                      </span>{" "}
+                                      <em
+                                        className="inline-suggestion-content"
+                                        contentEditable={
+                                          !nestedChild.isRevealing
+                                        }
+                                        suppressContentEditableWarning
+                                        spellCheck={false}
+                                        ref={(el) => {
+                                          revealContentRefs.current[
+                                            nestedChild.id
+                                          ] = el;
+                                          if (
+                                            el &&
+                                            !nestedChild.isRevealing &&
+                                            el.dataset.initialized !== "true"
+                                          ) {
+                                            el.innerText =
+                                              nestedChild.rewriteText!;
+                                            el.dataset.initialized = "true";
+                                          }
+                                        }}
+                                        onInput={(e) => {
+                                          if (nestedChild.isRevealing) return;
+                                          const newText = (
+                                            e.target as HTMLElement
+                                          ).innerText;
+                                          const idx =
+                                            pendingRewritesRef.current.findIndex(
+                                              (r) => r.id === nestedChild.id
+                                            );
+                                          if (idx !== -1) {
+                                            const existing =
+                                              pendingRewritesRef.current[idx];
+                                            if (existing) {
+                                              pendingRewritesRef.current[idx] =
+                                                {
+                                                  ...existing,
+                                                  rewriteText: newText,
+                                                };
+                                            }
+                                          }
+                                        }}
+                                      />
+                                    </div>
+                                    {!nestedChild.isRevealing && (
+                                      <div className="inline-suggestion-actions">
+                                        <button
+                                          type="button"
+                                          className="inline-suggestion-btn accept"
+                                          onClick={() =>
+                                            handleSuggestionAccept(
+                                              nestedChild.id
+                                            )
+                                          }
+                                        >
+                                          ✓ Merge
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="inline-suggestion-btn reject"
+                                          onClick={() =>
+                                            handleSuggestionReject(
+                                              nestedChild.id
+                                            )
+                                          }
+                                        >
+                                          ✕ Dismiss
+                                        </button>
+                                      </div>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            ) : null}
+                            {splitRanges.after ? (
+                              <span className="inline-suggestion-fragment inline-suggestion-fragment-after">
+                                {splitRanges.after}
+                              </span>
+                            ) : null}
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </>
-                )}
-              </div>
-            );
-          })}
+
+                      {!rw.isRevealing && (
+                        <div className="inline-suggestion-actions">
+                          <button
+                            type="button"
+                            className="inline-suggestion-btn accept"
+                            disabled={hasNested}
+                            title={
+                              hasNested
+                                ? "Merge or dismiss the nested suggestion first"
+                                : undefined
+                            }
+                            onClick={() => handleSuggestionAccept(rw.id)}
+                          >
+                            ✓ Accept
+                          </button>
+                          <button
+                            type="button"
+                            className="inline-suggestion-btn reject"
+                            onClick={() => handleSuggestionReject(rw.id)}
+                          >
+                            ✕ Reject
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
         </div>
           </div>
           </div>
