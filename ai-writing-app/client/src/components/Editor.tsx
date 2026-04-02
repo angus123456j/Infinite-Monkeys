@@ -46,6 +46,7 @@ const HIGHLIGHT_COLOR = "#ffcdd2";
 const INITIAL_SPACER_COUNT = 1;
 
 let nextRewriteId = 0;
+let nextInvocationId = 0;
 
 /** Generate a fun random monkey identifier */
 function randomMonkeyId(): string {
@@ -121,6 +122,61 @@ function computeSpacerInsertPos(doc: any, selTo: number): number {
   return selTo + 1;
 }
 
+function normalizeForSentenceDiff(s: string): string {
+  return (s ?? "").replace(/\s+/g, " ").trim();
+}
+
+function splitIntoSentenceChunks(text: string): string[] {
+  const t = (text ?? "").trim();
+  if (!t) return [];
+  const paragraphs = t.split(/\n\s*\n+/g);
+  const chunks: string[] = [];
+  for (const p of paragraphs) {
+    const para = p.trim();
+    if (!para) continue;
+    // Keep punctuation with the sentence; fall back to full paragraph.
+    const matches = para.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g);
+    if (!matches || matches.length === 0) {
+      chunks.push(para);
+      continue;
+    }
+    for (const m of matches) {
+      const s = m.trim();
+      if (s) chunks.push(s);
+    }
+  }
+  return chunks;
+}
+
+function computeSentenceAttribution(
+  originalText: string,
+  steps: Array<{ agentName: string; text: string }>
+): Array<{ sentence: string; agentName: string }> {
+  let prevChunks = splitIntoSentenceChunks(originalText);
+  let attrib: string[] = new Array(prevChunks.length).fill("Original");
+
+  for (const step of steps) {
+    const nextChunks = splitIntoSentenceChunks(step.text);
+    if (nextChunks.length !== prevChunks.length) {
+      // If sentence boundaries drift, mark whole output as last writer for clarity.
+      prevChunks = nextChunks;
+      attrib = new Array(nextChunks.length).fill(step.agentName);
+      continue;
+    }
+    for (let i = 0; i < nextChunks.length; i++) {
+      const a = normalizeForSentenceDiff(prevChunks[i] ?? "");
+      const b = normalizeForSentenceDiff(nextChunks[i] ?? "");
+      if (a !== b) attrib[i] = step.agentName;
+    }
+    prevChunks = nextChunks;
+  }
+
+  return prevChunks.map((sentence, i) => ({
+    sentence,
+    agentName: attrib[i] ?? "Unknown",
+  }));
+}
+
 /** Character offsets of a DOM range within an element's text content (for selections inside suggestion cards). */
 function getTextOffsetsInElement(
   el: HTMLElement,
@@ -160,6 +216,9 @@ interface PendingRewrite {
   parentId?: number;
   parentReplaceStart?: number;
   parentReplaceEnd?: number;
+  orchestratorMode?: "synthesis" | "sequential";
+  orchestratorSteps?: Array<{ agentId: string; agentName: string; text: string }>;
+  sentenceAttribution?: Array<{ sentence: string; agentName: string }>;
   monkeyId: string;
   from: number;
   to: number;
@@ -986,198 +1045,279 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
     orchestratorSpecialists,
   ]);
 
-  const handleOrchestratorExecute = useCallback(async () => {
-    if (orchestratorChain.length === 0) {
-      setOrchestratorError("Add at least one monkey to the chain.");
-      return;
-    }
-    const sel = getSelectionInfo();
-    if (!sel) {
-      setOrchestratorError("Select some text to execute the chain.");
-      return;
-    }
-
-    const doc = editor!.state.doc;
-    const currentContextIds = selectedContextIds;
-    const trimmedPrompt = (orchestratorInstruction.trim() || prompt.trim()).trim();
-    const currentPrompt =
-      trimmedPrompt ||
-      "Rewrite this selection in the agent's voice, improving clarity, flow, and style.";
-
-    setOrchestratorIsExecuting(true);
-    setOrchestratorError(null);
-
-    // Before spacer insert (which can shift positions), capture sentence for Synonym Sensei.
-    const sentenceForSynonym = extractSentenceContext(doc, sel.from, sel.to);
-
-    const spacerInsertPos = computeSpacerInsertPos(doc, sel.to);
-
-    // Highlight + insert spacers.
-    editor!
-      .chain()
-      .focus()
-      .setTextSelection({ from: sel.from, to: sel.to })
-      .setHighlight({ color: HIGHLIGHT_COLOR })
-      .command(({ tr, state }) => {
-        const paragraphType = state.schema.nodes["paragraph"];
-        if (!paragraphType) return false;
-        let pos = spacerInsertPos;
-        for (let i = 0; i < INITIAL_SPACER_COUNT; i++) {
-          const para = paragraphType.create();
-          tr.insert(pos, para);
-          pos += 2;
-        }
-        return true;
-      })
-      .setTextSelection(sel.to)
-      .run();
-
-    // Pending rewrite entry for the full chain result.
-    const id = nextRewriteId++;
-    const monkeyId = randomMonkeyId();
-    const pending: PendingRewrite = {
-      id,
-      monkeyId,
-      from: sel.from,
-      to: sel.to,
-      originalText: sel.text,
-      prompt: currentPrompt,
-      rewriteText: null,
-      isLoading: true,
-      isRevealing: false,
-      error: null,
-      spacerFrom: spacerInsertPos,
-      spacerTo: spacerInsertPos + INITIAL_SPACER_COUNT * 2,
-    };
-
-    pendingRewritesRef.current = [...pendingRewritesRef.current, pending];
-    setPendingRewrites((prev) => [...prev, pending]);
-
-    try {
-      // Compute timeline context labels.
-      let contextLabels: string[] = [];
-      try {
-        const allCtx = await listContexts();
-        contextLabels = currentContextIds.map(
-          (cid) => allCtx.find((c) => c.id === cid)?.title ?? cid
-        );
-      } catch {
-        contextLabels = currentContextIds.slice();
-      }
-
-      const synonymIds = new Set(
-        orchestratorSpecialists
-          .filter(
-            (a) =>
-              a.name.toLowerCase().includes("synonym sensei") ||
-              a.name.toLowerCase().includes("synonym monkey")
-          )
-          .map((a) => a.id)
-      );
-      const hasSynonym = orchestratorChain.some((id) => synonymIds.has(id));
-      const chainForExec = hasSynonym
-        ? [
-            ...orchestratorChain.filter((id) => synonymIds.has(id)),
-            ...orchestratorChain.filter((id) => !synonymIds.has(id)),
-          ]
-        : orchestratorChain;
-
-      setInvocationLog((prev) => [
-        ...prev,
-        {
-          id,
-          at: Date.now(),
-          agentId: chainForExec[0] ?? null,
-          agentName: "Orchestrator",
-          contextLabels,
-          userPrompt: currentPrompt,
-          apiPromptSent: currentPrompt,
-          originalText: sel.text,
-          response: null,
-          error: null,
-          status: "loading",
-        },
-      ]);
-
-      let currentText = sel.text;
+  const runOrchestratorChain = useCallback(
+    async (
+      inputText: string,
+      chainForExec: string[],
+      currentPrompt: string,
+      currentContextIds: string[],
+      sentenceForSynonym: string
+    ): Promise<Array<{ agentId: string; agentName: string; text: string }>> => {
+      const steps: Array<{ agentId: string; agentName: string; text: string }> = [];
+      let cur = inputText;
       for (const agentId of chainForExec) {
-        currentText = await fetchRewrite(
-          currentText,
+        const agentName =
+          orchestratorSpecialists.find((a) => a.id === agentId)?.name ??
+          "Unknown agent";
+        cur = await fetchRewrite(
+          cur,
           currentPrompt,
           agentId,
           currentContextIds,
           sentenceForSynonym
         );
+        steps.push({ agentId, agentName, text: cur });
+      }
+      return steps;
+    },
+    [fetchRewrite, orchestratorSpecialists]
+  );
+
+  const executeOrchestrator = useCallback(
+    async (mode: "synthesis" | "sequential") => {
+      if (orchestratorChain.length === 0) {
+        setOrchestratorError("Add at least one monkey to the chain.");
+        return;
+      }
+      const sel = getSelectionInfo();
+      if (!sel) {
+        setOrchestratorError("Select some text to execute the chain.");
+        return;
       }
 
-      insertPretextRevealSpacers(id, currentText);
-      const latestOrchestratorRw = pendingRewritesRef.current.find((r) => r.id === id)!;
-      setPendingRewrites((prev) =>
-        prev.map((rw) =>
+      const doc = editor!.state.doc;
+      const currentContextIds = selectedContextIds;
+      const trimmedPrompt = (orchestratorInstruction.trim() || prompt.trim()).trim();
+      const currentPrompt =
+        trimmedPrompt ||
+        "Rewrite this selection in the agent's voice, improving clarity, flow, and style.";
+
+      setOrchestratorIsExecuting(true);
+      setOrchestratorError(null);
+
+      const sentenceForSynonym = extractSentenceContext(doc, sel.from, sel.to) ?? "";
+      const spacerInsertPos = computeSpacerInsertPos(doc, sel.to);
+
+      editor!
+        .chain()
+        .focus()
+        .setTextSelection({ from: sel.from, to: sel.to })
+        .setHighlight({ color: HIGHLIGHT_COLOR })
+        .command(({ tr, state }) => {
+          const paragraphType = state.schema.nodes["paragraph"];
+          if (!paragraphType) return false;
+          let pos = spacerInsertPos;
+          for (let i = 0; i < INITIAL_SPACER_COUNT; i++) {
+            tr.insert(pos, paragraphType.create());
+            pos += 2;
+          }
+          return true;
+        })
+        .setTextSelection(sel.to)
+        .run();
+
+      const id = nextRewriteId++;
+      const monkeyId = randomMonkeyId();
+      const pending: PendingRewrite = {
+        id,
+        orchestratorMode: mode,
+        monkeyId,
+        from: sel.from,
+        to: sel.to,
+        originalText: sel.text,
+        prompt: currentPrompt,
+        rewriteText: null,
+        isLoading: true,
+        isRevealing: false,
+        error: null,
+        spacerFrom: spacerInsertPos,
+        spacerTo: spacerInsertPos + INITIAL_SPACER_COUNT * 2,
+      };
+      pendingRewritesRef.current = [...pendingRewritesRef.current, pending];
+      setPendingRewrites((prev) => [...prev, pending]);
+
+      try {
+        let contextLabels: string[] = [];
+        try {
+          const allCtx = await listContexts();
+          contextLabels = currentContextIds.map(
+            (cid) => allCtx.find((c) => c.id === cid)?.title ?? cid
+          );
+        } catch {
+          contextLabels = currentContextIds.slice();
+        }
+
+        const synonymIds = new Set(
+          orchestratorSpecialists
+            .filter(
+              (a) =>
+                a.name.toLowerCase().includes("synonym sensei") ||
+                a.name.toLowerCase().includes("synonym monkey")
+            )
+            .map((a) => a.id)
+        );
+        const hasSynonym = orchestratorChain.some((id2) => synonymIds.has(id2));
+        const chainForExec = hasSynonym
+          ? [
+              ...orchestratorChain.filter((id2) => synonymIds.has(id2)),
+              ...orchestratorChain.filter((id2) => !synonymIds.has(id2)),
+            ]
+          : orchestratorChain;
+
+        // Log each step in the timeline as it happens.
+        const baseInvocationIds = chainForExec.map(() => nextInvocationId++);
+        setInvocationLog((prev) => [
+          ...prev,
+          ...chainForExec.map((agentId, i) => ({
+            id: baseInvocationIds[i]!,
+            at: Date.now(),
+            agentId,
+            agentName:
+              orchestratorSpecialists.find((a) => a.id === agentId)?.name ??
+              "Unknown agent",
+            contextLabels,
+            userPrompt: currentPrompt,
+            apiPromptSent: currentPrompt,
+            originalText: sel.text,
+            response: null,
+            error: null,
+            status: "loading" as const,
+          })),
+        ]);
+
+        const steps = await runOrchestratorChain(
+          sel.text,
+          chainForExec,
+          currentPrompt,
+          currentContextIds,
+          sentenceForSynonym
+        );
+
+        setInvocationLog((prev) =>
+          prev.map((e) => {
+            const idx = baseInvocationIds.indexOf(e.id);
+            if (idx === -1) return e;
+            const text = steps[idx]?.text ?? null;
+            return text != null ? { ...e, status: "done" as const, response: text } : e;
+          })
+        );
+
+        let finalText = steps.length ? steps[steps.length - 1]!.text : sel.text;
+        let orchestratorSteps = steps;
+
+        if (mode === "synthesis") {
+          const synthesisPrompt =
+            "Synthesize the following rewrite into one clean final version. Preserve intent, remove redundancy, keep tone consistent, and avoid introducing new facts. Return only the rewritten text.";
+          const synthId = nextInvocationId++;
+          setInvocationLog((prev) => [
+            ...prev,
+            {
+              id: synthId,
+              at: Date.now(),
+              agentId: null,
+              agentName: "Synthesis",
+              contextLabels,
+              userPrompt: synthesisPrompt,
+              apiPromptSent: synthesisPrompt,
+              originalText: finalText,
+              response: null,
+              error: null,
+              status: "loading",
+            },
+          ]);
+          finalText = await fetchRewrite(
+            finalText,
+            synthesisPrompt,
+            null,
+            currentContextIds,
+            null
+          );
+          setInvocationLog((prev) =>
+            prev.map((e) =>
+              e.id === synthId
+                ? { ...e, status: "done" as const, response: finalText }
+                : e
+            )
+          );
+          orchestratorSteps = [
+            ...steps,
+            { agentId: "__synthesis__", agentName: "Synthesis", text: finalText },
+          ];
+        }
+
+        insertPretextRevealSpacers(id, finalText);
+        const latest = pendingRewritesRef.current.find((r) => r.id === id)!;
+        const sentenceAttribution =
+          mode === "sequential"
+            ? computeSentenceAttribution(sel.text, steps.map((s) => ({ agentName: s.agentName, text: s.text })))
+            : undefined;
+
+        setPendingRewrites((prev) =>
+          prev.map((rw) =>
+            rw.id === id
+              ? {
+                  ...rw,
+                  rewriteText: finalText,
+                  orchestratorSteps,
+                  sentenceAttribution,
+                  isLoading: false,
+                  isRevealing: true,
+                  spacerTo: latest.spacerTo,
+                }
+              : rw
+          )
+        );
+        pendingRewritesRef.current = pendingRewritesRef.current.map((rw) =>
           rw.id === id
             ? {
                 ...rw,
-                rewriteText: currentText,
+                rewriteText: finalText,
+                orchestratorSteps,
+                sentenceAttribution,
                 isLoading: false,
                 isRevealing: true,
-                spacerTo: latestOrchestratorRw.spacerTo,
+                spacerTo: latest.spacerTo,
               }
             : rw
-        )
-      );
-      pendingRewritesRef.current = pendingRewritesRef.current.map((rw) =>
-        rw.id === id
-          ? {
-              ...rw,
-              rewriteText: currentText,
-              isLoading: false,
-              isRevealing: true,
-              spacerTo: latestOrchestratorRw.spacerTo,
-            }
-          : rw
-      );
+        );
+      } catch (err: any) {
+        const msg = err?.message ?? "Failed to execute orchestrator chain";
+        setPendingRewrites((prev) =>
+          prev.map((rw) =>
+            rw.id === id ? { ...rw, error: msg, isLoading: false } : rw
+          )
+        );
+        pendingRewritesRef.current = pendingRewritesRef.current.map((rw) =>
+          rw.id === id ? { ...rw, error: msg, isLoading: false } : rw
+        );
+        setOrchestratorError(msg);
+      } finally {
+        setOrchestratorIsExecuting(false);
+      }
+    },
+    [
+      editor,
+      orchestratorChain,
+      orchestratorInstruction,
+      prompt,
+      selectedContextIds,
+      getSelectionInfo,
+      fetchRewrite,
+      orchestratorSpecialists,
+      insertPretextRevealSpacers,
+      runOrchestratorChain,
+    ]
+  );
 
-      setInvocationLog((prev) =>
-        prev.map((entry) =>
-          entry.id === id
-            ? { ...entry, status: "done" as const, response: currentText }
-            : entry
-        )
-      );
-    } catch (err: any) {
-      const msg = err?.message ?? "Failed to execute orchestrator chain";
-      setPendingRewrites((prev) =>
-        prev.map((rw) =>
-          rw.id === id
-            ? { ...rw, error: msg, isLoading: false }
-            : rw
-        )
-      );
-      pendingRewritesRef.current = pendingRewritesRef.current.map((rw) =>
-        rw.id === id ? { ...rw, error: msg, isLoading: false } : rw
-      );
-      setInvocationLog((prev) =>
-        prev.map((entry) =>
-          entry.id === id
-            ? { ...entry, status: "error" as const, error: msg }
-            : entry
-        )
-      );
-      setOrchestratorError(msg);
-    } finally {
-      setOrchestratorIsExecuting(false);
-    }
-  }, [
-    editor,
-    orchestratorChain,
-    orchestratorInstruction,
-    prompt,
-    selectedContextIds,
-    getSelectionInfo,
-    fetchRewrite,
-    orchestratorChain.length,
-    insertPretextRevealSpacers,
-  ]);
+  const handleOrchestratorSynthesis = useCallback(
+    async () => executeOrchestrator("synthesis"),
+    [executeOrchestrator]
+  );
+
+  const handleOrchestratorSequential = useCallback(
+    async () => executeOrchestrator("sequential"),
+    [executeOrchestrator]
+  );
 
   // Handle overlay submit — doc selection (highlight + spacers) or nested selection inside a suggestion card
   const handleOverlaySubmit = useCallback(async () => {
@@ -1776,17 +1916,31 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
               </button>
               <button
                 type="button"
-                className="editor-orchestrator-btn primary"
-                onClick={handleOrchestratorExecute}
+                className="editor-orchestrator-btn"
+                onClick={handleOrchestratorSequential}
                 disabled={
                   orchestratorIsExecuting ||
                   orchestratorIsProposing ||
                   orchestratorChain.length === 0 ||
                   !orchestratorHasSelection
                 }
-                title={!orchestratorHasSelection ? "Select some text to orchestrate" : "Execute sequentially"}
+                title={!orchestratorHasSelection ? "Select some text to orchestrate" : "Run sequential and show each step"}
               >
-                Execute
+                Sequential
+              </button>
+              <button
+                type="button"
+                className="editor-orchestrator-btn primary"
+                onClick={handleOrchestratorSynthesis}
+                disabled={
+                  orchestratorIsExecuting ||
+                  orchestratorIsProposing ||
+                  orchestratorChain.length === 0 ||
+                  !orchestratorHasSelection
+                }
+                title={!orchestratorHasSelection ? "Select some text to orchestrate" : "Run sequential then synthesize a final clean rewrite"}
+              >
+                Synthesis
               </button>
             </div>
           </div>
@@ -1884,41 +2038,83 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
                           Rewritten:
                         </span>{" "}
                         {!splitRanges ? (
-                          <em
-                            className="inline-suggestion-content"
-                            contentEditable={!rw.isRevealing && !hasNested}
-                            suppressContentEditableWarning
-                            spellCheck={false}
-                            ref={(el) => {
-                              revealContentRefs.current[rw.id] = el;
-                              if (
-                                el &&
-                                !rw.isRevealing &&
-                                !hasNested &&
-                                el.dataset.initialized !== "true"
-                              ) {
-                                el.innerText = rw.rewriteText!;
-                                el.dataset.initialized = "true";
-                              }
-                            }}
-                            onInput={(e) => {
-                              if (rw.isRevealing || hasNested) return;
-                              const newText = (e.target as HTMLElement)
-                                .innerText;
-                              const idx = pendingRewritesRef.current.findIndex(
-                                (r) => r.id === rw.id
-                              );
-                              if (idx !== -1) {
-                                const existing = pendingRewritesRef.current[idx];
-                                if (existing) {
-                                  pendingRewritesRef.current[idx] = {
-                                    ...existing,
-                                    rewriteText: newText,
-                                  };
+                          rw.orchestratorMode === "sequential" &&
+                          !rw.isRevealing &&
+                          (rw.sentenceAttribution?.length ?? 0) > 0 ? (
+                            <div className="inline-suggestion-attributed">
+                              {rw.sentenceAttribution!.map((row, idx) => (
+                                <span
+                                  key={`${rw.id}-sent-${idx}`}
+                                  className="inline-suggestion-attributed-sentence"
+                                >
+                                  <span className="inline-suggestion-sentence-tag">
+                                    {row.agentName}
+                                  </span>{" "}
+                                  {row.sentence}{" "}
+                                </span>
+                              ))}
+
+                              {rw.orchestratorSteps?.length ? (
+                                <details className="inline-suggestion-steps">
+                                  <summary>Sequential steps</summary>
+                                  <ol className="inline-suggestion-steps-list">
+                                    {rw.orchestratorSteps.map((s, i) => (
+                                      <li
+                                        key={`${rw.id}-step-${i}`}
+                                        className="inline-suggestion-step"
+                                      >
+                                        <div className="inline-suggestion-step-head">
+                                          <span className="inline-suggestion-step-agent">
+                                            {s.agentName}
+                                          </span>
+                                        </div>
+                                        <pre className="inline-suggestion-step-text">
+                                          {s.text}
+                                        </pre>
+                                      </li>
+                                    ))}
+                                  </ol>
+                                </details>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <em
+                              className="inline-suggestion-content"
+                              contentEditable={!rw.isRevealing && !hasNested}
+                              suppressContentEditableWarning
+                              spellCheck={false}
+                              ref={(el) => {
+                                revealContentRefs.current[rw.id] = el;
+                                if (
+                                  el &&
+                                  !rw.isRevealing &&
+                                  !hasNested &&
+                                  el.dataset.initialized !== "true"
+                                ) {
+                                  el.innerText = rw.rewriteText!;
+                                  el.dataset.initialized = "true";
                                 }
-                              }
-                            }}
-                          />
+                              }}
+                              onInput={(e) => {
+                                if (rw.isRevealing || hasNested) return;
+                                const newText = (e.target as HTMLElement)
+                                  .innerText;
+                                const idx = pendingRewritesRef.current.findIndex(
+                                  (r) => r.id === rw.id
+                                );
+                                if (idx !== -1) {
+                                  const existing =
+                                    pendingRewritesRef.current[idx];
+                                  if (existing) {
+                                    pendingRewritesRef.current[idx] = {
+                                      ...existing,
+                                      rewriteText: newText,
+                                    };
+                                  }
+                                }
+                              }}
+                            />
+                          )
                         ) : (
                           <div
                             key={`split-${rw.id}-${nestedChild?.id}`}

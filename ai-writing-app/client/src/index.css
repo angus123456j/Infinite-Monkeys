@@ -4059,6 +4059,79 @@ body.full-screen .agent-invocation-timeline {
   box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.2);
 }
 
+.inline-suggestion-attributed {
+  display: block;
+  width: 100%;
+  margin-top: 2px;
+}
+
+.inline-suggestion-attributed-sentence {
+  display: inline;
+}
+
+.inline-suggestion-sentence-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-style: normal;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: rgba(60, 64, 67, 0.92);
+  background: rgba(26, 115, 232, 0.08);
+  border: 1px solid rgba(26, 115, 232, 0.25);
+  white-space: nowrap;
+}
+
+.inline-suggestion-steps {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.inline-suggestion-steps > summary {
+  cursor: pointer;
+  user-select: none;
+  font-style: normal;
+  text-decoration: none;
+  color: rgba(60, 64, 67, 0.9);
+  font-weight: 600;
+}
+
+.inline-suggestion-steps-list {
+  margin: 10px 0 0 0;
+  padding: 0 0 0 18px;
+}
+
+.inline-suggestion-step {
+  margin: 0 0 12px 0;
+}
+
+.inline-suggestion-step-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.inline-suggestion-step-agent {
+  font-style: normal;
+  font-weight: 700;
+  color: rgba(60, 64, 67, 0.92);
+}
+
+.inline-suggestion-step-text {
+  margin: 0;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 8px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-style: italic;
+  color: rgba(32, 33, 36, 0.92);
+}
+
 .inline-suggestion-actions {
   display: flex;
   gap: 8px;
@@ -4668,6 +4741,29 @@ body.full-screen .agent-invocation-timeline {
 [data-theme="dark"] .inline-suggestion-content:focus {
   background: rgba(100, 160, 255, 0.15);
   box-shadow: 0 0 0 2px rgba(100, 160, 255, 0.3);
+}
+
+[data-theme="dark"] .inline-suggestion-sentence-tag {
+  color: rgba(231, 238, 245, 0.92);
+  background: rgba(100, 160, 255, 0.14);
+  border-color: rgba(130, 180, 255, 0.45);
+}
+
+[data-theme="dark"] .inline-suggestion-steps {
+  border-top-color: rgba(255, 255, 255, 0.12);
+}
+
+[data-theme="dark"] .inline-suggestion-steps > summary {
+  color: rgba(231, 238, 245, 0.92);
+}
+
+[data-theme="dark"] .inline-suggestion-step-agent {
+  color: rgba(231, 238, 245, 0.92);
+}
+
+[data-theme="dark"] .inline-suggestion-step-text {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(231, 238, 245, 0.92);
 }
 
 [data-theme="dark"] .inline-suggestion-error {
