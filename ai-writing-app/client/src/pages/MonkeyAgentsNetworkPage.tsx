@@ -146,11 +146,12 @@ export default function MonkeyAgentsNetworkPage() {
         </p>
         <div style={{ marginTop: "0.6rem", display: "flex", gap: "0.5rem" }}>
           <Link
-            to="/?section=desk"
+            to="/"
+            state={{ skipIntro: true }}
             className="network-back-btn"
-            aria-label="Back to desk view"
+            aria-label="Back to home"
           >
-            Back to desk
+            Back to home
           </Link>
         <button
           type="button"

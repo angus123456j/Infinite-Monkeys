@@ -322,7 +322,7 @@ export default function DocsPage() {
   return (
     <div className="docs-page">
       <header className="docs-header">
-        <Link to="/?section=desk" className="docs-logo">
+        <Link to="/" state={{ skipIntro: true }} className="docs-logo">
           Infinite Monkeys
         </Link>
         <div className="docs-header-main">
