@@ -156,7 +156,7 @@ function Overlay({
             value={selectedAgentId ?? ""}
             onChange={(e) => onAgentChange(e.target.value || null)}
           >
-            <option value="">No agent (default)</option>
+            <option value="">Default Agent</option>
             {agents.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name} — {a.role}

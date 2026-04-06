@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   useEffect,
+  useLayoutEffect,
   useCallback,
   MouseEvent,
 } from "react";
@@ -14,7 +15,13 @@ import { Color } from "@tiptap/extension-color";
 import Highlight from "@tiptap/extension-highlight";
 import FontFamily from "@tiptap/extension-font-family";
 import { FontSize } from "../extensions/FontSize";
+import {
+  WritingAnalysisHighlight,
+  setWritingAnalysisDecorations,
+} from "../extensions/WritingAnalysisHighlight";
+import { buildWritingHighlightDecorations } from "../utils/writingHighlightDecorations";
 import Toolbar from "./Toolbar";
+import WritingPulsePanel from "./WritingPulsePanel";
 import Overlay from "./Overlay";
 import AgentInvocationTimeline, {
   type AgentInvocationLogEntry,
@@ -44,6 +51,22 @@ const GAP_HEIGHT = 25;
 const HIGHLIGHT_COLOR = "#ffcdd2";
 /** Initial number of spacer paragraphs for loading state (kept small so short rewrites don't add big gaps) */
 const INITIAL_SPACER_COUNT = 1;
+
+const LS_ORCHESTRATOR_EXPANDED = "im-orchestrator-expanded";
+const LS_WRITING_PULSE_EXPANDED = "im-writing-pulse-expanded";
+const LS_TIMELINE_VISIBLE = "im-editor-timeline-visible";
+const HIGHLIGHT_DEBOUNCE_MS = 200;
+
+function readStoredSidebarVisible(key: string, defaultVisible: boolean): boolean {
+  try {
+    const v = localStorage.getItem(key);
+    if (v === "false") return false;
+    if (v === "true") return true;
+  } catch {
+    /* ignore */
+  }
+  return defaultVisible;
+}
 
 let nextRewriteId = 0;
 let nextInvocationId = 0;
@@ -282,6 +305,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
       Highlight.configure({ multicolor: true }),
       FontFamily,
       FontSize,
+      WritingAnalysisHighlight,
     ],
     content: initialContent,
     autofocus: true,
@@ -289,6 +313,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
 
   const contentRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
+  const editorPageAreaRef = useRef<HTMLDivElement>(null);
   const [pageCount, setPageCount] = useState(1);
   const [containerMinHeight, setContainerMinHeight] = useState(PAGE_HEIGHT);
   const [contentVersion, setContentVersion] = useState(0);
@@ -304,6 +329,40 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
   const [orchestratorIsExecuting, setOrchestratorIsExecuting] = useState(false);
   const [orchestratorError, setOrchestratorError] = useState<string | null>(null);
 
+  const [orchestratorSectionExpanded, setOrchestratorSectionExpanded] = useState(
+    () => readStoredSidebarVisible(LS_ORCHESTRATOR_EXPANDED, true)
+  );
+  const [writingPulseExpanded, setWritingPulseExpanded] = useState(() =>
+    readStoredSidebarVisible(LS_WRITING_PULSE_EXPANDED, true)
+  );
+  const [showMonkeyTimeline, setShowMonkeyTimeline] = useState(() =>
+    readStoredSidebarVisible(LS_TIMELINE_VISIBLE, true)
+  );
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_ORCHESTRATOR_EXPANDED, String(orchestratorSectionExpanded));
+    } catch {
+      /* ignore */
+    }
+  }, [orchestratorSectionExpanded]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_WRITING_PULSE_EXPANDED, String(writingPulseExpanded));
+    } catch {
+      /* ignore */
+    }
+  }, [writingPulseExpanded]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_TIMELINE_VISIBLE, String(showMonkeyTimeline));
+    } catch {
+      /* ignore */
+    }
+  }, [showMonkeyTimeline]);
+
   useEffect(() => {
     try {
       localStorage.setItem(LLM_PROVIDER_STORAGE_KEY, llmProvider);
@@ -311,6 +370,91 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
       /* ignore */
     }
   }, [llmProvider]);
+
+  /** Keep fixed Monkey timeline aligned with the top of the document page card. */
+  useLayoutEffect(() => {
+    const el = pageRef.current;
+    if (!el) return;
+
+    const syncTimelineTop = () => {
+      const top = el.getBoundingClientRect().top;
+      const timelineTop = Math.max(0, top);
+      document.documentElement.style.setProperty(
+        "--agent-invocation-timeline-top",
+        `${timelineTop}px`
+      );
+      const collapsedTabCount =
+        (!writingPulseExpanded ? 1 : 0) + (!orchestratorSectionExpanded ? 1 : 0);
+      if (collapsedTabCount > 0) {
+        /* Align first tab (Editor) with the Monkey timeline strip — same Y as page card top */
+        document.documentElement.style.setProperty(
+          "--editor-rail-tabs-dock-top",
+          `${timelineTop}px`
+        );
+      } else {
+        document.documentElement.style.removeProperty("--editor-rail-tabs-dock-top");
+      }
+    };
+
+    const scheduleSync = () => {
+      syncTimelineTop();
+      requestAnimationFrame(() => {
+        requestAnimationFrame(syncTimelineTop);
+      });
+    };
+
+    scheduleSync();
+
+    const ro = new ResizeObserver(scheduleSync);
+    ro.observe(el);
+    if (editorPageAreaRef.current) {
+      ro.observe(editorPageAreaRef.current);
+    }
+    window.addEventListener("resize", scheduleSync);
+
+    const mo = new MutationObserver(scheduleSync);
+    mo.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+
+    if (document.fonts?.ready) {
+      void document.fonts.ready.then(scheduleSync);
+    }
+
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", scheduleSync);
+      mo.disconnect();
+      document.documentElement.style.removeProperty("--agent-invocation-timeline-top");
+      document.documentElement.style.removeProperty("--editor-rail-tabs-dock-top");
+    };
+  }, [orchestratorSectionExpanded, writingPulseExpanded]);
+
+  /** Live in-document writing highlights (local analysis; debounced). */
+  useEffect(() => {
+    if (!editor) return;
+
+    const apply = () => {
+      const decos = buildWritingHighlightDecorations(editor);
+      setWritingAnalysisDecorations(editor, decos);
+    };
+
+    apply();
+
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const schedule = () => {
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        apply();
+        timeoutId = null;
+      }, HIGHLIGHT_DEBOUNCE_MS);
+    };
+
+    editor.on("update", schedule);
+    return () => {
+      editor.off("update", schedule);
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      setWritingAnalysisDecorations(editor, []);
+    };
+  }, [editor]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1370,7 +1514,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
       try {
         const agentMeta = currentAgentId ? await getAgent(currentAgentId) : null;
         const agentName =
-          agentMeta?.name ?? (currentAgentId ? "Unknown agent" : "No agent");
+          agentMeta?.name ?? (currentAgentId ? "Unknown agent" : "Default Agent");
 
         let contextLabels: string[] = [];
         try {
@@ -1520,7 +1664,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
     try {
       const agentMeta = currentAgentId ? await getAgent(currentAgentId) : null;
       const agentName =
-        agentMeta?.name ?? (currentAgentId ? "Unknown agent" : "No agent");
+        agentMeta?.name ?? (currentAgentId ? "Unknown agent" : "Default Agent");
 
       let contextLabels: string[] = [];
       try {
@@ -1808,14 +1952,31 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
         llmProvider={llmProvider}
         onLlmProviderChange={setLlmProvider}
       />
-      <div className="editor-page-area">
-        <aside
-          className="editor-orchestrator-rail"
-          aria-label="Orchestrator"
-        >
-          <div className="editor-orchestrator-title">Orchestrator</div>
+      <div ref={editorPageAreaRef} className="editor-page-area">
+        <aside className="editor-orchestrator-rail" aria-label="Writing tools">
+          <WritingPulsePanel
+            editor={editor}
+            expanded={writingPulseExpanded}
+            onExpandedChange={setWritingPulseExpanded}
+          />
+          <div className="editor-orchestrator-section">
+            {orchestratorSectionExpanded ? (
+              <>
+            <div className="editor-orchestrator-header">
+              <div className="editor-orchestrator-title">Orchestrator</div>
+              <button
+                type="button"
+                className="editor-orchestrator-collapse"
+                onClick={() => setOrchestratorSectionExpanded(false)}
+                aria-expanded
+                aria-label="Collapse Orchestrator"
+                title="Hide Orchestrator"
+              >
+                ‹
+              </button>
+            </div>
 
-          <div className="editor-orchestrator-block">
+            <div className="editor-orchestrator-block">
             <div className="editor-orchestrator-subtitle">
               Build a sequential specialist chain. Requires a non-empty selection.
             </div>
@@ -1944,7 +2105,10 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
               </button>
             </div>
           </div>
-        </aside>
+              </>
+            ) : null}
+          </div>
+          </aside>
 
         <div className="editor-main-column">
           <div className="editor-document-center">
@@ -2286,7 +2450,50 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
           </div>
         </div>
         </div>
-        <AgentInvocationTimeline entries={invocationLog} />
+        {(!writingPulseExpanded || !orchestratorSectionExpanded) && (
+          <div className="editor-rail-tabs-dock" aria-label="Collapsed writing tools">
+            {!writingPulseExpanded && (
+              <button
+                type="button"
+                className="editor-sidebar-reveal editor-sidebar-reveal--rail-tab"
+                onClick={() => setWritingPulseExpanded(true)}
+                aria-expanded={false}
+                aria-label="Expand Editor"
+                title="Show Editor"
+              >
+                <span className="editor-sidebar-reveal-label">Editor</span>
+              </button>
+            )}
+            {!orchestratorSectionExpanded && (
+              <button
+                type="button"
+                className="editor-sidebar-reveal editor-sidebar-reveal--rail-tab"
+                onClick={() => setOrchestratorSectionExpanded(true)}
+                aria-expanded={false}
+                aria-label="Expand Orchestrator"
+                title="Show Orchestrator"
+              >
+                <span className="editor-sidebar-reveal-label">Orchestrator</span>
+              </button>
+            )}
+          </div>
+        )}
+        {showMonkeyTimeline ? (
+          <AgentInvocationTimeline
+            entries={invocationLog}
+            onCollapse={() => setShowMonkeyTimeline(false)}
+          />
+        ) : (
+          <button
+            type="button"
+            className="editor-sidebar-reveal editor-sidebar-reveal--timeline"
+            onClick={() => setShowMonkeyTimeline(true)}
+            aria-label="Show Monkey timeline"
+            title="Show Monkey timeline"
+          >
+            <span className="editor-sidebar-reveal-label">Timeline</span>
+          </button>
+        )}
       <Overlay
         isOpen={isOverlayOpen}
         onClose={handleOverlayClose}

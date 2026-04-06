@@ -16,6 +16,7 @@ export interface AgentInvocationLogEntry {
 
 interface AgentInvocationTimelineProps {
   entries: AgentInvocationLogEntry[];
+  onCollapse?: () => void;
 }
 
 const TIMELINE_TITLE = "Monkey timeline";
@@ -31,6 +32,7 @@ function formatTime(ts: number): string {
 
 export default function AgentInvocationTimeline({
   entries,
+  onCollapse,
 }: AgentInvocationTimelineProps) {
   const [openId, setOpenId] = useState<number | null>(null);
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -58,7 +60,20 @@ export default function AgentInvocationTimeline({
   return (
     <aside className="agent-invocation-timeline" aria-label="Monkey timeline">
       <div className="agent-invocation-timeline-inner">
-        <h3 className="agent-invocation-timeline-heading">{TIMELINE_TITLE}</h3>
+        <div className="agent-invocation-timeline-header">
+          <h3 className="agent-invocation-timeline-heading">{TIMELINE_TITLE}</h3>
+          {onCollapse ? (
+            <button
+              type="button"
+              className="agent-invocation-timeline-collapse"
+              onClick={onCollapse}
+              aria-label="Hide Monkey timeline"
+              title="Hide timeline"
+            >
+              ›
+            </button>
+          ) : null}
+        </div>
 
         {entries.length === 0 ? null : (
           <ol className="agent-invocation-timeline-list">

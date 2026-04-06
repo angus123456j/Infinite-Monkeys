@@ -1,5 +1,6 @@
-import { Link, useSearchParams, useLocation } from "react-router-dom";
-import { useEffect, useRef, useState } from "react";
+import { Link, useSearchParams, useLocation, useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { createDoc } from "../lib/docs";
 
 const VIDEO_PATH = "/models/monkeyvid.mp4";
 /** Product demo: add `client/public/videos/product-demo.mp4` (screen recording). */
@@ -9,6 +10,9 @@ const TYPEWRITER_LINE1 = "Infinite drafts. One perfect sentence.";
 const TYPEWRITER_LINE2 = "Write alongside infinite minds.";
 const TYPING_END_AT = 0.75;
 const CHAR_INTERVAL_MS = 40;
+
+const ABOUT_HEADLINE_LINE = "What is";
+const ABOUT_HEADLINE_ACCENT = "this?";
 
 const ABOUT_PANELS: Array<{
   id: 1 | 2 | 3;
@@ -53,6 +57,7 @@ function shouldSkipIntroVideo(
  * Landing page: full-screen intro video + typewriter, then main content (no WebGL desk).
  */
 export default function HomePage() {
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const location = useLocation();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -67,7 +72,27 @@ export default function HomePage() {
   );
   const [visibleChars1, setVisibleChars1] = useState(0);
   const [visibleChars2, setVisibleChars2] = useState(0);
+  const [aboutIntroVisible, setAboutIntroVisible] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+  const [startWritingPending, setStartWritingPending] = useState(false);
   const line2UnlockedRef = useRef(false);
+
+  async function handleStartWriting() {
+    if (startWritingPending) return;
+    setStartWritingPending(true);
+    try {
+      const meta = await createDoc({ title: "Untitled document" });
+      navigate(`/doc/${meta.id}`);
+    } catch (err) {
+      console.error("Failed to create document:", err);
+      navigate("/docs");
+    } finally {
+      setStartWritingPending(false);
+    }
+  }
 
   useEffect(() => {
     if (visibleChars1 >= TYPEWRITER_LINE1.length) line2UnlockedRef.current = true;
@@ -97,6 +122,24 @@ export default function HomePage() {
       aboutRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
     }
   }, [searchParams]);
+
+  useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const el = aboutRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (entry?.isIntersecting) {
+          setAboutIntroVisible(true);
+          io.disconnect();
+        }
+      },
+      { threshold: 0.14, rootMargin: "0px 0px -6% 0px" }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
 
   useEffect(() => {
     if (introDone) return;
@@ -266,19 +309,27 @@ export default function HomePage() {
                 <span className="home-hero-title-accent">Monkeys</span>
               </h1>
               <p className="home-hero-lead">
-                Highlight text in your document, summon specialist agents, and iterate on
-                rewrites—without losing your voice.
+                <strong>
+                  A new writing medium shaped by specialist agents and your own context.
+                </strong>
               </p>
               <div className="home-hero-actions">
-                <Link to="/docs" className="home-hero-cta primary">
-                  Open Drive
-                </Link>
+                <button
+                  type="button"
+                  className="home-hero-cta primary"
+                  onClick={handleStartWriting}
+                  disabled={startWritingPending}
+                  aria-busy={startWritingPending}
+                >
+                  {startWritingPending ? "Opening…" : "Start writing"}
+                </button>
                 <Link to="/monkey-agents-network" className="home-hero-cta secondary">
                   Browse agents
                 </Link>
               </div>
-              <p className="home-hero-hint">
-                New here? Scroll for details—or jump straight into documents.
+              <p className="home-hero-subline">
+                Highlight text, summon specialist agents, and pull from a context library that
+                travels with your writing.
               </p>
             </div>
             <div className="home-hero-demo">
@@ -301,11 +352,44 @@ export default function HomePage() {
           className="home-about-section home-about-section--wave"
         >
           <div className="home-shell home-about-wave-inner">
-            <div className="home-about-intro">
+            <div
+              className={`home-about-intro${aboutIntroVisible ? " home-about-intro--visible" : ""}`}
+            >
               <p className="home-about-eyebrow">Learn more</p>
-              <h2 className="home-about-display">
-                <span className="home-about-display-line">What is</span>{" "}
-                <span className="home-about-display-accent">this?</span>
+              <h2 className="home-about-display" aria-label={`${ABOUT_HEADLINE_LINE} ${ABOUT_HEADLINE_ACCENT}`}>
+                <span aria-hidden className="home-about-display-line">
+                  {ABOUT_HEADLINE_LINE.split("").map((ch, i) => (
+                    <span
+                      key={`about-h1-${i}`}
+                      className="home-about-display-char"
+                      style={{ "--char-i": i } as CSSProperties}
+                    >
+                      {ch === " " ? "\u00a0" : ch}
+                    </span>
+                  ))}
+                </span>
+                <span
+                  aria-hidden
+                  className="home-about-display-char home-about-display-char--gap"
+                  style={{ "--char-i": ABOUT_HEADLINE_LINE.length } as CSSProperties}
+                >
+                  {"\u00a0"}
+                </span>
+                <span aria-hidden className="home-about-display-accent">
+                  {ABOUT_HEADLINE_ACCENT.split("").map((ch, i) => (
+                    <span
+                      key={`about-h2-${i}`}
+                      className="home-about-display-char"
+                      style={
+                        {
+                          "--char-i": ABOUT_HEADLINE_LINE.length + 1 + i,
+                        } as CSSProperties
+                      }
+                    >
+                      {ch}
+                    </span>
+                  ))}
+                </span>
               </h2>
               <p className="home-about-lead">
                 A document-first editor with a context library and reusable monkey agents—so
