@@ -6,6 +6,7 @@ import { seedAgentsFromMarkdown } from "./agents/seedAgentsFromMarkdown.js";
 import { normalizeArchetype } from "./agents/archetype.js";
 import { createLlmClients, getHttpStatusDeep, type LlmProviderMode } from "./llm.js";
 import { sanitizeRewriteOutput } from "./rewriteSanitize.js";
+import { registerScrutinyRoutes } from "./scrutiny/registerScrutinyRoutes.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -112,6 +113,8 @@ const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
 
   next();
 };
+
+registerScrutinyRoutes({ app, limiter, authMiddleware });
 
 // Health check endpoint
 app.get("/health", (_req, res) => {

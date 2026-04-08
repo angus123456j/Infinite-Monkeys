@@ -19,9 +19,11 @@ import {
   WritingAnalysisHighlight,
   setWritingAnalysisDecorations,
 } from "../extensions/WritingAnalysisHighlight";
+import { ScrutinyHighlight, setScrutinyDecorations } from "../extensions/ScrutinyHighlight";
 import { buildWritingHighlightDecorations } from "../utils/writingHighlightDecorations";
 import Toolbar from "./Toolbar";
 import WritingPulsePanel from "./WritingPulsePanel";
+import ScrutinyPanel from "./ScrutinyPanel.tsx";
 import Overlay from "./Overlay";
 import AgentInvocationTimeline, {
   type AgentInvocationLogEntry,
@@ -55,6 +57,7 @@ const INITIAL_SPACER_COUNT = 1;
 const LS_ORCHESTRATOR_EXPANDED = "im-orchestrator-expanded";
 const LS_WRITING_PULSE_EXPANDED = "im-writing-pulse-expanded";
 const LS_TIMELINE_VISIBLE = "im-editor-timeline-visible";
+const LS_SCRUTINY_EXPANDED = "im-scrutiny-expanded";
 const HIGHLIGHT_DEBOUNCE_MS = 200;
 
 function readStoredSidebarVisible(key: string, defaultVisible: boolean): boolean {
@@ -306,6 +309,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
       FontFamily,
       FontSize,
       WritingAnalysisHighlight,
+      ScrutinyHighlight,
     ],
     content: initialContent,
     autofocus: true,
@@ -335,6 +339,9 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
   const [writingPulseExpanded, setWritingPulseExpanded] = useState(() =>
     readStoredSidebarVisible(LS_WRITING_PULSE_EXPANDED, true)
   );
+  const [scrutinyExpanded, setScrutinyExpanded] = useState(() =>
+    readStoredSidebarVisible(LS_SCRUTINY_EXPANDED, true)
+  );
   const [showMonkeyTimeline, setShowMonkeyTimeline] = useState(() =>
     readStoredSidebarVisible(LS_TIMELINE_VISIBLE, true)
   );
@@ -357,6 +364,14 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
 
   useEffect(() => {
     try {
+      localStorage.setItem(LS_SCRUTINY_EXPANDED, String(scrutinyExpanded));
+    } catch {
+      /* ignore */
+    }
+  }, [scrutinyExpanded]);
+
+  useEffect(() => {
+    try {
       localStorage.setItem(LS_TIMELINE_VISIBLE, String(showMonkeyTimeline));
     } catch {
       /* ignore */
@@ -374,19 +389,20 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
   /** Keep fixed Monkey timeline aligned with the top of the document page card. */
   useLayoutEffect(() => {
     const el = pageRef.current;
+    const scrollArea = editorPageAreaRef.current;
     if (!el) return;
 
     const syncTimelineTop = () => {
-      const top = el.getBoundingClientRect().top;
-      const timelineTop = Math.max(0, top);
+      const pageTop = el.getBoundingClientRect().top;
+      const minTop = scrollArea ? scrollArea.getBoundingClientRect().top : 0;
+      const timelineTop = Math.max(minTop, pageTop);
       document.documentElement.style.setProperty(
         "--agent-invocation-timeline-top",
         `${timelineTop}px`
       );
       const collapsedTabCount =
-        (!writingPulseExpanded ? 1 : 0) + (!orchestratorSectionExpanded ? 1 : 0);
+        (!writingPulseExpanded ? 1 : 0) + (!orchestratorSectionExpanded ? 1 : 0) + (!scrutinyExpanded ? 1 : 0);
       if (collapsedTabCount > 0) {
-        /* Align first tab (Editor) with the Monkey timeline strip — same Y as page card top */
         document.documentElement.style.setProperty(
           "--editor-rail-tabs-dock-top",
           `${timelineTop}px`
@@ -407,8 +423,9 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
 
     const ro = new ResizeObserver(scheduleSync);
     ro.observe(el);
-    if (editorPageAreaRef.current) {
-      ro.observe(editorPageAreaRef.current);
+    if (scrollArea) {
+      ro.observe(scrollArea);
+      scrollArea.addEventListener("scroll", syncTimelineTop, { passive: true });
     }
     window.addEventListener("resize", scheduleSync);
 
@@ -421,16 +438,26 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
 
     return () => {
       ro.disconnect();
+      if (scrollArea) {
+        scrollArea.removeEventListener("scroll", syncTimelineTop);
+      }
       window.removeEventListener("resize", scheduleSync);
       mo.disconnect();
       document.documentElement.style.removeProperty("--agent-invocation-timeline-top");
       document.documentElement.style.removeProperty("--editor-rail-tabs-dock-top");
     };
-  }, [orchestratorSectionExpanded, writingPulseExpanded]);
+  }, [orchestratorSectionExpanded, writingPulseExpanded, scrutinyExpanded]);
 
   /** Live in-document writing highlights (local analysis; debounced). */
   useEffect(() => {
     if (!editor) return;
+
+    // When the Writing Pulse panel is collapsed, disable and clear highlights so
+    // the editor behaves like the feature is "off" while minimized.
+    if (!writingPulseExpanded) {
+      setWritingAnalysisDecorations(editor, []);
+      return;
+    }
 
     const apply = () => {
       const decos = buildWritingHighlightDecorations(editor);
@@ -454,7 +481,15 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
       if (timeoutId !== null) clearTimeout(timeoutId);
       setWritingAnalysisDecorations(editor, []);
     };
-  }, [editor]);
+  }, [editor, writingPulseExpanded]);
+
+  // Clear AI scrutiny highlights while the panel is collapsed.
+  useEffect(() => {
+    if (!editor) return;
+    if (!scrutinyExpanded) {
+      setScrutinyDecorations(editor, []);
+    }
+  }, [editor, scrutinyExpanded]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1954,6 +1989,11 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
       />
       <div ref={editorPageAreaRef} className="editor-page-area">
         <aside className="editor-orchestrator-rail" aria-label="Writing tools">
+          <ScrutinyPanel
+            editor={editor}
+            expanded={scrutinyExpanded}
+            onExpandedChange={setScrutinyExpanded}
+          />
           <WritingPulsePanel
             editor={editor}
             expanded={writingPulseExpanded}
@@ -2450,8 +2490,20 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
           </div>
         </div>
         </div>
-        {(!writingPulseExpanded || !orchestratorSectionExpanded) && (
+        {(!writingPulseExpanded || !orchestratorSectionExpanded || !scrutinyExpanded) && (
           <div className="editor-rail-tabs-dock" aria-label="Collapsed writing tools">
+            {!scrutinyExpanded && (
+              <button
+                type="button"
+                className="editor-sidebar-reveal editor-sidebar-reveal--rail-tab"
+                onClick={() => setScrutinyExpanded(true)}
+                aria-expanded={false}
+                aria-label="Expand AI Scrutiny"
+                title="Show AI Scrutiny"
+              >
+                <span className="editor-sidebar-reveal-label">Scrutiny</span>
+              </button>
+            )}
             {!writingPulseExpanded && (
               <button
                 type="button"

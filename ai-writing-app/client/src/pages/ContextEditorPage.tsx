@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
 import Editor from "../components/Editor";
-import MonkeyScene from "../components/MonkeyScene";
 import DocMenuBar, { type WritingEffectId } from "../components/DocMenuBar";
 import FindReplaceModal from "../components/FindReplaceModal";
 import WordCountModal from "../components/WordCountModal";
@@ -53,9 +52,6 @@ export default function ContextEditorPage() {
   if (loading) {
     return (
       <div className="app">
-        <div className="app-top-bar" aria-hidden="true">
-          <MonkeyScene />
-        </div>
         <div className="title-bar">
           <Link to="/docs" className="doc-icon-link" title="Back to drive">
             <svg className="doc-icon" width="24" height="30" viewBox="0 0 24 24" fill="#4285f4">
@@ -74,9 +70,6 @@ export default function ContextEditorPage() {
   return (
     <EditorContext.Provider value={editor}>
       <div className="app">
-        <div className="app-top-bar" aria-hidden="true">
-          <MonkeyScene />
-        </div>
         <div className="title-bar">
           <Link to="/docs?drive=context" className="doc-icon-link" title="Back to drive">
             <svg className="doc-icon" width="24" height="30" viewBox="0 0 24 24" fill="#4285f4">

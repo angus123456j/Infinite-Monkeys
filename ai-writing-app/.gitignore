@@ -3,6 +3,7 @@ dist
 *.local
 .env
 .env.*
+.cache/
 
 # Large media (use mp4 instead of gif)
 **/monkeygiff.gif

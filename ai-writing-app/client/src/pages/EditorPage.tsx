@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import Editor from "../components/Editor";
 import DocMenuBar, { type WritingEffectId } from "../components/DocMenuBar";
 import FindReplaceModal from "../components/FindReplaceModal";
@@ -7,10 +7,12 @@ import WordCountModal from "../components/WordCountModal";
 import KeyboardShortcutsModal from "../components/KeyboardShortcutsModal";
 import EditorContext from "../contexts/EditorContext";
 import { getDocument, updateDocTitle, saveDoc } from "../lib/docs";
+import { createContext } from "../lib/contexts";
 import type { Editor as TiptapEditor } from "@tiptap/react";
 
 export default function EditorPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [editor, setEditor] = useState<TiptapEditor | null>(null);
   const [title, setTitle] = useState("Untitled document");
   const [initialContent, setInitialContent] = useState<string>("<p></p>");
@@ -19,6 +21,7 @@ export default function EditorPage() {
   const [wordCountOpen, setWordCountOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [writingEffect, setWritingEffect] = useState<WritingEffectId>("none");
+  const [exportingToContext, setExportingToContext] = useState(false);
 
   useEffect(() => {
     if (!id) {
@@ -52,6 +55,23 @@ export default function EditorPage() {
     [id]
   );
 
+  const handleExportToContext = useCallback(async () => {
+    if (!editor || exportingToContext) return;
+    setExportingToContext(true);
+    try {
+      const html = editor.getHTML();
+      const ctx = await createContext({
+        title: title.trim() || "Untitled context",
+        description: html,
+        tags: ["exported"],
+      });
+      navigate(`/context/${ctx.id}`);
+    } catch (err) {
+      console.error("Failed to export to context:", err);
+      setExportingToContext(false);
+    }
+  }, [editor, exportingToContext, navigate, title]);
+
   if (loading) {
     return (
       <div className="app">
@@ -80,18 +100,32 @@ export default function EditorPage() {
             </svg>
           </Link>
           <div className="title-area">
-            <input
-              className="doc-title"
-              value={title}
-              onChange={handleTitleChange}
-              aria-label="Document title"
-            />
+            <div className="doc-title-row">
+              <input
+                className="doc-title"
+                value={title}
+                onChange={handleTitleChange}
+                aria-label="Document title"
+              />
+            </div>
             <DocMenuBar
               onOpenFindReplace={() => setFindReplaceOpen(true)}
               onOpenWordCount={() => setWordCountOpen(true)}
               onOpenKeyboardShortcuts={() => setShortcutsOpen(true)}
               onSelectWritingEffect={setWritingEffect}
             />
+          </div>
+          <div className="title-bar-actions">
+            <button
+              type="button"
+              className="title-bar-export-btn"
+              onClick={() => void handleExportToContext()}
+              disabled={!editor || exportingToContext}
+              title="Export to Context library"
+              aria-label="Export to Context library"
+            >
+              {exportingToContext ? "Exporting…" : "Export to Context library"}
+            </button>
           </div>
         </div>
         <Editor
