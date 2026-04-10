@@ -3256,6 +3256,66 @@ body.full-screen .editor-page-area {
   color: rgba(255, 255, 255, 0.42);
 }
 
+/* AI Scrutiny — rail copy uses dark grays by default; lighten on forest */
+[data-theme="forest"] .scrutiny-panel {
+  border-bottom-color: rgba(208, 222, 216, 0.12);
+}
+
+[data-theme="forest"] .scrutiny-toggle {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+[data-theme="forest"] .scrutiny-score-label {
+  color: rgba(255, 255, 255, 0.65);
+}
+
+[data-theme="forest"] .scrutiny-score-value {
+  color: rgba(255, 255, 255, 0.95);
+}
+
+[data-theme="forest"] .scrutiny-note,
+[data-theme="forest"] .scrutiny-empty {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+[data-theme="forest"] .scrutiny-meta {
+  color: rgba(255, 255, 255, 0.62);
+}
+
+[data-theme="forest"] .scrutiny-error {
+  color: #f28b82;
+}
+
+[data-theme="forest"] .scrutiny-sentence {
+  background: rgba(24, 57, 43, 0.45);
+  border-color: rgba(88, 139, 118, 0.35);
+}
+
+[data-theme="forest"] .scrutiny-sentence:hover {
+  border-color: rgba(88, 139, 118, 0.55);
+  background: rgba(24, 57, 43, 0.65);
+}
+
+[data-theme="forest"] .scrutiny-sentence-text {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+[data-theme="forest"] .scrutiny-sentence-score {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+[data-theme="forest"] .scrutiny-sentence--low .scrutiny-sentence-score {
+  color: #81c995;
+}
+
+[data-theme="forest"] .scrutiny-actions .editor-orchestrator-btn {
+  color: #d0ded8;
+}
+
+[data-theme="forest"] .scrutiny-actions .editor-orchestrator-btn:disabled {
+  color: rgba(208, 222, 216, 0.45);
+}
+
 /* Theme: Blue */
 [data-theme="blue"] .editor-orchestrator-subtitle,
 [data-theme="blue"] .editor-orchestrator-muted {
@@ -3393,6 +3453,66 @@ body.full-screen .editor-page-area {
 
 [data-theme="blue"] .writing-pulse-empty-hint {
   color: rgba(255, 255, 255, 0.42);
+}
+
+/* AI Scrutiny — rail copy on blue */
+[data-theme="blue"] .scrutiny-panel {
+  border-bottom-color: rgba(224, 232, 240, 0.1);
+}
+
+[data-theme="blue"] .scrutiny-toggle {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+[data-theme="blue"] .scrutiny-score-label {
+  color: rgba(224, 232, 240, 0.7);
+}
+
+[data-theme="blue"] .scrutiny-score-value {
+  color: rgba(255, 255, 255, 0.95);
+}
+
+[data-theme="blue"] .scrutiny-note,
+[data-theme="blue"] .scrutiny-empty {
+  color: rgba(224, 232, 240, 0.78);
+}
+
+[data-theme="blue"] .scrutiny-meta {
+  color: rgba(224, 232, 240, 0.65);
+}
+
+[data-theme="blue"] .scrutiny-error {
+  color: #f28b82;
+}
+
+[data-theme="blue"] .scrutiny-sentence {
+  background: rgba(19, 34, 54, 0.55);
+  border-color: rgba(110, 168, 254, 0.22);
+}
+
+[data-theme="blue"] .scrutiny-sentence:hover {
+  border-color: rgba(110, 168, 254, 0.38);
+  background: rgba(19, 34, 54, 0.72);
+}
+
+[data-theme="blue"] .scrutiny-sentence-text {
+  color: rgba(255, 255, 255, 0.92);
+}
+
+[data-theme="blue"] .scrutiny-sentence-score {
+  color: rgba(224, 232, 240, 0.78);
+}
+
+[data-theme="blue"] .scrutiny-sentence--low .scrutiny-sentence-score {
+  color: #81c995;
+}
+
+[data-theme="blue"] .scrutiny-actions .editor-orchestrator-btn {
+  color: #e0e8f0;
+}
+
+[data-theme="blue"] .scrutiny-actions .editor-orchestrator-btn:disabled {
+  color: rgba(224, 232, 240, 0.45);
 }
 
 /* Theme: Pink */
@@ -3542,9 +3662,18 @@ body.full-screen .agent-invocation-timeline {
   margin: 0 0 12px 0;
 }
 
+.agent-invocation-timeline-header-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
 .agent-invocation-timeline-heading {
   margin: 0;
-  max-width: 14em;
+  max-width: none;
   font-size: 13px;
   font-weight: 600;
   line-height: 1.35;
@@ -3552,7 +3681,19 @@ body.full-screen .agent-invocation-timeline {
   color: #3c4043;
 }
 
+.agent-invocation-timeline-hint {
+  margin: 0;
+  padding: 0;
+  max-width: 100%;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.35;
+  color: #80868b;
+}
+
 .agent-invocation-timeline-header .agent-invocation-timeline-collapse {
+  flex-shrink: 0;
   margin-top: 2px;
 }
 
@@ -3586,6 +3727,13 @@ body.full-screen .agent-invocation-timeline {
   align-items: center;
   gap: 8px;
   min-width: 0;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
 }
 
 .agent-invocation-timeline-connector {
@@ -4053,6 +4201,13 @@ body.full-screen .agent-invocation-timeline {
   margin: 0;
   padding: 0;
   color: var(--editor-doc-fg);
+}
+
+/* Rewrite spacer paragraphs are empty (or br-only); without this they can collapse
+   shorter than our layout math assumes and the absolute-positioned card covers text below. */
+.editor-content .tiptap > p:empty,
+.editor-content .tiptap > p:has(br:only-child) {
+  min-height: 1.15em;
 }
 
 .editor-content .tiptap h1 {
@@ -4769,6 +4924,7 @@ body.full-screen .agent-invocation-timeline {
   display: flex;
   gap: 8px;
   margin-top: 6px;
+  margin-bottom: 12px;
   padding: 2px 0;
 }
 
@@ -5379,6 +5535,66 @@ body.full-screen .agent-invocation-timeline {
   color: rgba(255, 255, 255, 0.35);
 }
 
+/* AI Scrutiny — rail copy on dark */
+[data-theme="dark"] .scrutiny-panel {
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .scrutiny-toggle {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+[data-theme="dark"] .scrutiny-score-label {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+[data-theme="dark"] .scrutiny-score-value {
+  color: rgba(255, 255, 255, 0.95);
+}
+
+[data-theme="dark"] .scrutiny-note,
+[data-theme="dark"] .scrutiny-empty {
+  color: rgba(255, 255, 255, 0.65);
+}
+
+[data-theme="dark"] .scrutiny-meta {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+[data-theme="dark"] .scrutiny-error {
+  color: #f28b82;
+}
+
+[data-theme="dark"] .scrutiny-sentence {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme="dark"] .scrutiny-sentence:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+[data-theme="dark"] .scrutiny-sentence-text {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+[data-theme="dark"] .scrutiny-sentence-score {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+[data-theme="dark"] .scrutiny-sentence--low .scrutiny-sentence-score {
+  color: #81c995;
+}
+
+[data-theme="dark"] .scrutiny-actions .editor-orchestrator-btn {
+  color: #e8eaed;
+}
+
+[data-theme="dark"] .scrutiny-actions .editor-orchestrator-btn:disabled {
+  color: rgba(232, 234, 237, 0.45);
+}
+
 [data-theme="dark"] .editor-content .tiptap .writing-signal--sentence-hard {
   background: rgba(255, 193, 7, 0.18);
 }
@@ -5428,6 +5644,10 @@ body.full-screen .agent-invocation-timeline {
 }
 
 [data-theme="dark"] .agent-invocation-timeline-empty {
+  color: #9aa0a6;
+}
+
+[data-theme="dark"] .agent-invocation-timeline-hint {
   color: #9aa0a6;
 }
 
@@ -5921,6 +6141,10 @@ body.full-screen .agent-invocation-timeline {
   color: #fff;
 }
 
+[data-theme="forest"] .agent-invocation-timeline-hint {
+  color: rgba(255, 255, 255, 0.72);
+}
+
 [data-theme="forest"] .agent-invocation-dot {
   border-color: #18392b;
   box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.45);
@@ -6349,6 +6573,10 @@ body.full-screen .agent-invocation-timeline {
   color: #fff;
 }
 
+[data-theme="blue"] .agent-invocation-timeline-hint {
+  color: rgba(255, 255, 255, 0.72);
+}
+
 [data-theme="blue"] .agent-invocation-dot {
   border-color: #132236;
   box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.35);
@@ -6767,6 +6995,10 @@ body.full-screen .agent-invocation-timeline {
 [data-theme="pink"] .agent-invocation-timeline-time,
 [data-theme="pink"] .agent-invocation-timeline-agent {
   color: #5c4a52;
+}
+
+[data-theme="pink"] .agent-invocation-timeline-hint {
+  color: #7d6d75;
 }
 
 [data-theme="pink"] .agent-invocation-dot {

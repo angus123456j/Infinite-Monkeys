@@ -6,6 +6,7 @@ import {
   useEffect,
   useLayoutEffect,
   useCallback,
+  useMemo,
   MouseEvent,
 } from "react";
 import StarterKit from "@tiptap/starter-kit";
@@ -28,8 +29,8 @@ import Overlay from "./Overlay";
 import AgentInvocationTimeline, {
   type AgentInvocationLogEntry,
 } from "./AgentInvocationTimeline";
-import type { WritingEffectId } from "./DocMenuBar";
 import { joinForward } from "@tiptap/pm/commands";
+import type { EditorView } from "@tiptap/pm/view";
 import { getAgent, listAgents, type AgentMeta } from "../lib/agents";
 import { listContexts } from "../lib/contexts";
 import { extractSentenceContext } from "../lib/extractSentenceContext";
@@ -51,8 +52,11 @@ const PAGE_HEIGHT =
 const GAP_HEIGHT = 25;
 /** Highlight color used for pending rewrites */
 const HIGHLIGHT_COLOR = "#ffcdd2";
-/** Initial number of spacer paragraphs for loading state (kept small so short rewrites don't add big gaps) */
-const INITIAL_SPACER_COUNT = 1;
+/**
+ * Empty paragraphs under the highlight when a rewrite starts. The caret is placed *after*
+ * this strip so typing stays clear of the floating card (loading + full rewrite + buttons).
+ */
+const INITIAL_SPACER_COUNT = 14;
 
 const LS_ORCHESTRATOR_EXPANDED = "im-orchestrator-expanded";
 const LS_WRITING_PULSE_EXPANDED = "im-writing-pulse-expanded";
@@ -146,6 +150,30 @@ function computeSpacerInsertPos(doc: any, selTo: number): number {
   // Case 3: at a normal boundary (end of word/sentence, or newline). Insert
   // spacers just after the selection so the next word/paragraph stays below.
   return selTo + 1;
+}
+
+/** Doc position after `count` empty paragraphs inserted starting at `insertPos` (each empty `<p>` is size 2). */
+function docPosAfterSpacerParagraphs(insertPos: number, count: number): number {
+  return insertPos + count * 2;
+}
+
+/** Vertical size in px of the spacer strip in the document flow (measured; avoids collapsed empty-`<p>` math errors). */
+function measureRewriteSpacerStripPx(
+  view: EditorView,
+  spacerFrom: number,
+  spacerTo: number
+): number {
+  const docSize = view.state.doc.content.size;
+  if (spacerTo <= spacerFrom || docSize <= 1) return 0;
+  try {
+    const fromProbe = Math.min(Math.max(spacerFrom, 1), docSize - 1);
+    const toProbe = Math.min(Math.max(spacerTo - 1, fromProbe), docSize - 1);
+    const top = view.coordsAtPos(fromProbe, 1).top;
+    const bottom = view.coordsAtPos(toProbe, -1).bottom;
+    return Math.max(0, bottom - top);
+  } catch {
+    return 0;
+  }
 }
 
 function normalizeForSentenceDiff(s: string): string {
@@ -295,10 +323,9 @@ interface EditorProps {
   initialContent?: string;
   onSaveContent?: (content: string) => void;
   onEditorReady?: (editor: TiptapEditor) => void;
-  writingEffect?: WritingEffectId | null;
 }
 
-function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorReady, writingEffect = "none" }: EditorProps) {
+function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorReady }: EditorProps) {
   const editor = useEditor({
     extensions: [
       StarterKit,
@@ -386,16 +413,20 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
     }
   }, [llmProvider]);
 
-  /** Keep fixed Monkey timeline aligned with the top of the document page card. */
+  /** Position fixed Monkey timeline + rail tabs with the page card; update on layout only (not document scroll). */
   useLayoutEffect(() => {
     const el = pageRef.current;
     const scrollArea = editorPageAreaRef.current;
     if (!el) return;
 
     const syncTimelineTop = () => {
-      const pageTop = el.getBoundingClientRect().top;
-      const minTop = scrollArea ? scrollArea.getBoundingClientRect().top : 0;
-      const timelineTop = Math.max(minTop, pageTop);
+      const scrollRect = scrollArea?.getBoundingClientRect();
+      const pageRect = el.getBoundingClientRect();
+      const minTop = scrollRect?.top ?? 0;
+      // Align with the document page card top (like the initial layout), but clamp so we never
+      // sit above the editor pane. Do not tie this to scroll — only layout/resize — so fixed
+      // timeline + rail tabs stay visually stuck while the document scrolls.
+      const timelineTop = Math.max(minTop, pageRect.top);
       document.documentElement.style.setProperty(
         "--agent-invocation-timeline-top",
         `${timelineTop}px`
@@ -425,7 +456,6 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
     ro.observe(el);
     if (scrollArea) {
       ro.observe(scrollArea);
-      scrollArea.addEventListener("scroll", syncTimelineTop, { passive: true });
     }
     window.addEventListener("resize", scheduleSync);
 
@@ -438,9 +468,6 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
 
     return () => {
       ro.disconnect();
-      if (scrollArea) {
-        scrollArea.removeEventListener("scroll", syncTimelineTop);
-      }
       window.removeEventListener("resize", scheduleSync);
       mo.disconnect();
       document.documentElement.style.removeProperty("--agent-invocation-timeline-top");
@@ -545,11 +572,26 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
   // keep nudging content down until there is no overlap, without adding an
   // unbounded number of blank lines.
   const spacerAdjustedRef = useRef<Record<number, number>>({});
+  /** Latest overlap-repair spacer adjust (also invoked during word reveal DOM updates). */
+  const adjustRewriteOverlapSpacersRef = useRef<() => void>(() => {});
 
   // Keep ref in sync with state
   useEffect(() => {
     pendingRewritesRef.current = pendingRewrites;
   }, [pendingRewrites]);
+
+  /** When reveal ends, Accept/Reject mount — remeasure after paint (ResizeObserver can lag one frame). */
+  const rewritePhaseSig = useMemo(
+    () =>
+      pendingRewrites
+        .filter((rw) => rw.parentId == null)
+        .map(
+          (rw) =>
+            `${rw.id}:${rw.isRevealing ? 1 : 0}:${rw.isLoading ? 1 : 0}`
+        )
+        .join("|"),
+    [pendingRewrites]
+  );
 
   // Track the latest HTML so we can save without touching the editor DOM
   const lastHtmlRef = useRef<string>(initialContent);
@@ -774,7 +816,10 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
 
   // Measure actual suggestion element height and adjust spacers to prevent overlap
   useEffect(() => {
-    if (!editor || pendingRewrites.length === 0) return;
+    if (!editor || pendingRewrites.length === 0) {
+      adjustRewriteOverlapSpacersRef.current = () => {};
+      return;
+    }
 
     let frameId: number | null = null;
     let adjusting = false;
@@ -788,67 +833,123 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
         const el = suggestionElRefs.current[rw.id];
         if (!el) continue;
 
-        const suggestionRect = el.getBoundingClientRect();
-        if (suggestionRect.height <= 0) continue;
+        const rewriteForMeasure =
+          pendingRewritesRef.current.find((r) => r.id === rw.id)?.rewriteText ??
+          rw.rewriteText ??
+          rw.originalText ??
+          "";
+        const MAX_EXTRA_PARAS = maxOverlapRepairExtraParas(rewriteForMeasure);
+        /** Conservative: assume each new empty `<p>` adds ~this much flow height after min-height CSS. */
+        const pixelsPerPara = 13;
 
-        try {
+        /** Pixels of clearance required between card bottom and top of following doc content. */
+        const CARD_CLEARANCE_PX = 28;
+        /** Extra slack: measured spacer strip should be at least card height + this. */
+        const STRIP_VS_CARD_BUFFER_PX = 56;
+        /**
+         * Tie minimum spacer *count* to measured card height (includes Accept/Reject).
+         * Converts a shortfall into px so overlap repair inserts enough rows even if coords lag.
+         */
+        const CARD_PARA_SLOT_PX = 11;
+        const CARD_PARA_EXTRA_RESERVE_PX = 88;
+
+        let rwSpacersChanged = false;
+        for (let round = 0; round < 22; round++) {
+          const cur = pendingRewritesRef.current.find((r) => r.id === rw.id);
+          if (!cur || cur.parentId != null) break;
+
+          const rectNow = el.getBoundingClientRect();
+          if (rectNow.height <= 0) break;
+
           const docSize = editor.state.doc.content.size;
-          const safePos = Math.min(rw.spacerTo, docSize);
-          if (safePos >= docSize) continue;
+          const safePos = Math.min(cur.spacerTo, docSize);
 
-          const contentAfter = editor.view.coordsAtPos(safePos, 1);
-          const overlap = suggestionRect.bottom - contentAfter.top;
-          // If the suggestion overlaps the content that follows it, insert some
-          // extra spacer paragraphs after spacerTo so the document below is
-          // pushed down instead of being covered by the overlay.
-          //
-          // We allow multiple small nudges per rewrite so that as the rewritten
-          // text grows line‑by‑line, we keep adding just enough space rather
-          // than guessing all at once. The cap scales with Pretext-predicted
-          // card height so long multi-line rewrites are not stuck after a few px.
-          const currentExtra = spacerAdjustedRef.current[rw.id] ?? 0;
-          const rewriteForMeasure = rw.rewriteText ?? rw.originalText ?? "";
-          const MAX_EXTRA_PARAS = maxOverlapRepairExtraParas(rewriteForMeasure);
-
-          if (overlap > 0 && currentExtra < MAX_EXTRA_PARAS) {
-            const pixelsPerPara = LINE_HEIGHT_PX + 4;
-            const remaining = MAX_EXTRA_PARAS - currentExtra;
-            const extraParas = Math.max(
-              1,
-              Math.min(remaining, Math.ceil(overlap / pixelsPerPara))
-            );
-
-            editor
-              .chain()
-              .command(({ tr, state }) => {
-                let pos = rw.spacerTo;
-                const paragraphType = state.schema.nodes["paragraph"];
-                if (!paragraphType) return false;
-                for (let i = 0; i < extraParas; i++) {
-                  const para = paragraphType.create();
-                  tr.insert(pos, para);
-                  pos += 2;
-                }
-                return true;
-              })
-              .run();
-
-            spacerAdjustedRef.current[rw.id] = currentExtra + extraParas;
-
-            const newSpacerTo = rw.spacerTo + extraParas * 2;
-            const updated = pendingRewritesRef.current.map((r) =>
-              r.id === rw.id ? { ...r, spacerTo: newSpacerTo } : r
-            );
-            pendingRewritesRef.current = updated;
-            setPendingRewrites(updated);
+          let contentAfterTop: number;
+          try {
+            if (safePos >= docSize) {
+              const probe = Math.max(1, Math.min(cur.spacerTo - 1, docSize - 1));
+              const c = editor.view.coordsAtPos(probe, -1);
+              contentAfterTop = c.bottom;
+            } else {
+              const a = editor.view.coordsAtPos(safePos, 1);
+              const b = editor.view.coordsAtPos(safePos, -1);
+              contentAfterTop = Math.min(a.top, b.top);
+            }
+          } catch {
+            break;
           }
-        } catch {
-          // position may be invalid during transitions
+
+          const overlap = rectNow.bottom - contentAfterTop;
+          const spacerParas = (cur.spacerTo - cur.spacerFrom) / 2;
+          const measuredStripPx = measureRewriteSpacerStripPx(
+            editor.view,
+            cur.spacerFrom,
+            cur.spacerTo
+          );
+          const reservedFlowPx =
+            measuredStripPx > 4 ? measuredStripPx : spacerParas * pixelsPerPara;
+          const heightGap = rectNow.height - reservedFlowPx + STRIP_VS_CARD_BUFFER_PX;
+          const stripVsCardShortfall = Math.max(
+            0,
+            rectNow.height + STRIP_VS_CARD_BUFFER_PX - measuredStripPx
+          );
+
+          const minParasForCardHeight = Math.ceil(
+            (rectNow.height + CARD_PARA_EXTRA_RESERVE_PX) / CARD_PARA_SLOT_PX
+          );
+          const paraCountShortfallPx =
+            Math.max(0, minParasForCardHeight - spacerParas) * CARD_PARA_SLOT_PX;
+
+          const overlapNeed = Math.max(
+            overlap + CARD_CLEARANCE_PX,
+            heightGap,
+            stripVsCardShortfall,
+            paraCountShortfallPx
+          );
+
+          const currentExtra = spacerAdjustedRef.current[cur.id] ?? 0;
+          if (overlapNeed <= 0 || currentExtra >= MAX_EXTRA_PARAS) break;
+
+          const remaining = MAX_EXTRA_PARAS - currentExtra;
+          const extraParas = Math.max(
+            1,
+            Math.min(
+              remaining,
+              Math.ceil((overlapNeed / pixelsPerPara) * 1.2)
+            )
+          );
+
+          editor
+            .chain()
+            .command(({ tr, state }) => {
+              let pos = cur.spacerTo;
+              const paragraphType = state.schema.nodes["paragraph"];
+              if (!paragraphType) return false;
+              for (let i = 0; i < extraParas; i++) {
+                tr.insert(pos, paragraphType.create());
+                pos += 2;
+              }
+              return true;
+            })
+            .run();
+
+          spacerAdjustedRef.current[cur.id] = currentExtra + extraParas;
+
+          const newSpacerTo = cur.spacerTo + extraParas * 2;
+          pendingRewritesRef.current = pendingRewritesRef.current.map((r) =>
+            r.id === cur.id ? { ...r, spacerTo: newSpacerTo } : r
+          );
+          rwSpacersChanged = true;
+        }
+        if (rwSpacersChanged) {
+          setPendingRewrites(pendingRewritesRef.current.slice());
         }
       }
 
       adjusting = false;
     };
+
+    adjustRewriteOverlapSpacersRef.current = adjustSpacers;
 
     const scheduleAdjust = () => {
       if (frameId !== null) cancelAnimationFrame(frameId);
@@ -868,10 +969,99 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
     scheduleAdjust();
 
     return () => {
+      adjustRewriteOverlapSpacersRef.current = () => {};
       if (frameId !== null) cancelAnimationFrame(frameId);
       observers.forEach((obs) => obs.disconnect());
     };
   }, [editor, pendingRewrites, suggestionPositions]);
+
+  // Re-check overlap when the doc or caret moves — ResizeObserver only sees card size.
+  useEffect(() => {
+    if (!editor || pendingRewrites.length === 0) return;
+    let timeoutId: number | undefined;
+    const schedule = () => {
+      if (timeoutId != null) window.clearTimeout(timeoutId);
+      timeoutId = window.setTimeout(() => {
+        timeoutId = undefined;
+        adjustRewriteOverlapSpacersRef.current();
+      }, 16);
+    };
+    editor.on("update", schedule);
+    editor.on("selectionUpdate", schedule);
+    return () => {
+      editor.off("update", schedule);
+      editor.off("selectionUpdate", schedule);
+      if (timeoutId != null) window.clearTimeout(timeoutId);
+    };
+  }, [editor, pendingRewrites.length]);
+
+  /* Nudge spacers after paint: loading card mounts, reveal ends, actions appear — not only Accept/Reject. */
+  useLayoutEffect(() => {
+    if (!editor) return;
+    if (!pendingRewrites.some((rw) => rw.parentId == null)) return;
+    requestAnimationFrame(() => {
+      adjustRewriteOverlapSpacersRef.current();
+      requestAnimationFrame(() => adjustRewriteOverlapSpacersRef.current());
+    });
+  }, [editor, rewritePhaseSig]);
+
+  // Enter: move the caret from the rewritten passage / spacer strip to the doc below the card
+  useEffect(() => {
+    if (!editor) return;
+    const dom = editor.view.dom;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Enter" || e.shiftKey || e.defaultPrevented) return;
+      if (e.isComposing) return;
+      if (!editor.isFocused) return;
+      const head = editor.state.selection.$head.pos;
+      for (const rw of pendingRewritesRef.current) {
+        if (rw.parentId != null) continue;
+        if (head >= rw.from && head < rw.spacerTo) {
+          e.preventDefault();
+          e.stopPropagation();
+          const docSize = editor.state.doc.content.size;
+          const target = Math.min(Math.max(1, rw.spacerTo), docSize);
+          editor.chain().focus().setTextSelection(target).scrollIntoView().run();
+          requestAnimationFrame(() => {
+            adjustRewriteOverlapSpacersRef.current();
+            requestAnimationFrame(() => {
+              adjustRewriteOverlapSpacersRef.current();
+              requestAnimationFrame(() => adjustRewriteOverlapSpacersRef.current());
+            });
+          });
+          return;
+        }
+        const cardEl = suggestionElRefs.current[rw.id];
+        if (!cardEl) continue;
+        try {
+          const cardRect = cardEl.getBoundingClientRect();
+          const caretTop = editor.view.coordsAtPos(head).top;
+          if (
+            head >= rw.spacerTo &&
+            caretTop < cardRect.bottom - 2
+          ) {
+            e.preventDefault();
+            e.stopPropagation();
+            adjustRewriteOverlapSpacersRef.current();
+            requestAnimationFrame(() => {
+              adjustRewriteOverlapSpacersRef.current();
+              requestAnimationFrame(() => {
+                adjustRewriteOverlapSpacersRef.current();
+                if (!editor.isDestroyed) {
+                  editor.chain().focus().splitBlock().run();
+                }
+              });
+            });
+            return;
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+    dom.addEventListener("keydown", onKeyDown, true);
+    return () => dom.removeEventListener("keydown", onKeyDown, true);
+  }, [editor]);
 
   // Word-by-word reveal animation — pre-allocates spacers for full text first
   useEffect(() => {
@@ -932,10 +1122,12 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
           if (contentEl) {
             contentEl.innerText = words.slice(0, wordIndex).join(" ");
           }
+          requestAnimationFrame(() => adjustRewriteOverlapSpacersRef.current());
 
           if (wordIndex >= words.length) {
             clearInterval(timer);
             delete revealTimersRef.current[rw.id];
+            requestAnimationFrame(() => adjustRewriteOverlapSpacersRef.current());
             setPendingRewrites((prev) =>
               prev.map((r) =>
                 r.id === rw.id ? { ...r, isRevealing: false } : r
@@ -1292,7 +1484,10 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
           }
           return true;
         })
-        .setTextSelection(sel.to)
+        .setTextSelection(
+          docPosAfterSpacerParagraphs(spacerInsertPos, INITIAL_SPACER_COUNT)
+        )
+        .scrollIntoView()
         .run();
 
       const id = nextRewriteId++;
@@ -1524,6 +1719,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
       setStoredSelection(null);
 
       const id = nextRewriteId++;
+      const timelineLogId = nextInvocationId++;
       const monkeyId = randomMonkeyId();
       const pending: PendingRewrite = {
         id,
@@ -1564,7 +1760,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
         setInvocationLog((prev) => [
           ...prev,
           {
-            id,
+            id: timelineLogId,
             at: Date.now(),
             agentId: currentAgentId,
             agentName,
@@ -1611,7 +1807,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
 
         setInvocationLog((prev) =>
           prev.map((entry) =>
-            entry.id === id
+            entry.id === timelineLogId
               ? { ...entry, status: "done" as const, response: result }
               : entry
           )
@@ -1627,9 +1823,9 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
           rw.id === id ? { ...rw, error: msg, isLoading: false } : rw
         );
         setInvocationLog((prev) => {
-          if (!prev.some((e) => e.id === id)) return prev;
+          if (!prev.some((e) => e.id === timelineLogId)) return prev;
           return prev.map((entry) =>
-            entry.id === id
+            entry.id === timelineLogId
               ? { ...entry, status: "error" as const, error: msg }
               : entry
           );
@@ -1669,11 +1865,15 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
         }
         return true;
       })
-      .setTextSelection(sel.to)
+      .setTextSelection(
+        docPosAfterSpacerParagraphs(spacerInsertPos, INITIAL_SPACER_COUNT)
+      )
+      .scrollIntoView()
       .run();
 
     // Create the pending rewrite entry
     const id = nextRewriteId++;
+    const timelineLogId = nextInvocationId++;
     const monkeyId = randomMonkeyId();
 
     const pending: PendingRewrite = {
@@ -1730,7 +1930,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
       setInvocationLog((prev) => [
         ...prev,
         {
-          id,
+          id: timelineLogId,
           at: Date.now(),
           agentId: currentAgentId,
           agentName,
@@ -1779,7 +1979,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
       );
       setInvocationLog((prev) =>
         prev.map((entry) =>
-          entry.id === id
+          entry.id === timelineLogId
             ? { ...entry, status: "done" as const, response: result }
             : entry
         )
@@ -1807,9 +2007,9 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
           : rw
       );
       setInvocationLog((prev) => {
-        if (!prev.some((e) => e.id === id)) return prev;
+        if (!prev.some((e) => e.id === timelineLogId)) return prev;
         return prev.map((entry) =>
-          entry.id === id
+          entry.id === timelineLogId
             ? { ...entry, status: "error" as const, error: msg }
             : entry
         );
@@ -2154,7 +2354,7 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
           <div className="editor-document-center">
           <div
             className="writing-effect-wrapper"
-            data-writing-effect={writingEffect ?? "none"}
+            data-writing-effect="none"
           >
           <div
             ref={pageRef}

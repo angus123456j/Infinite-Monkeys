@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
 import Editor from "../components/Editor";
-import DocMenuBar, { type WritingEffectId } from "../components/DocMenuBar";
+import DocMenuBar from "../components/DocMenuBar";
 import FindReplaceModal from "../components/FindReplaceModal";
 import WordCountModal from "../components/WordCountModal";
 import KeyboardShortcutsModal from "../components/KeyboardShortcutsModal";
@@ -18,7 +18,6 @@ export default function ContextEditorPage() {
   const [findReplaceOpen, setFindReplaceOpen] = useState(false);
   const [wordCountOpen, setWordCountOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [writingEffect, setWritingEffect] = useState<WritingEffectId>("none");
 
   useEffect(() => {
     if (!id) { setLoading(false); return; }
@@ -87,7 +86,6 @@ export default function ContextEditorPage() {
               onOpenFindReplace={() => setFindReplaceOpen(true)}
               onOpenWordCount={() => setWordCountOpen(true)}
               onOpenKeyboardShortcuts={() => setShortcutsOpen(true)}
-              onSelectWritingEffect={setWritingEffect}
             />
           </div>
         </div>
@@ -97,7 +95,6 @@ export default function ContextEditorPage() {
           initialContent={initialContent}
           onSaveContent={handleSaveContent}
           onEditorReady={setEditor}
-          writingEffect={writingEffect}
         />
       </div>
       {findReplaceOpen && (

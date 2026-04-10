@@ -25,10 +25,7 @@ const SHORTCUTS: { category: string; keys: { keys: string; desc: string }[] }[] 
   },
   {
     category: "Document",
-    keys: [
-      { keys: "Ctrl+S", desc: "Save (auto-save is on)" },
-      { keys: "Ctrl+P", desc: "Print" },
-    ],
+    keys: [{ keys: "Ctrl+S", desc: "Save (auto-save is on)" }],
   },
 ];
 

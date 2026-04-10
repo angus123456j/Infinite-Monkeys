@@ -19,13 +19,17 @@ export const EDITOR_INLINE_SUGGESTION_LAYOUT_LINE_HEIGHT_PX = (11 / 72) * 96 * 1
  * Text in the card wraps narrower than full column width because "↪ Rewritten:" sits on the first line.
  * Underestimating width made Pretext predict too few lines and left the overlay covering text below.
  */
+/** Narrower than the card’s inner column so Pretext predicts more wrapped lines (real card wraps tighter). */
 export const EDITOR_INLINE_SUGGESTION_TEXT_MAX_WIDTH_PX = Math.max(
-  320,
-  EDITOR_REWRITE_TEXT_MAX_WIDTH_PX - 140
+  300,
+  EDITOR_REWRITE_TEXT_MAX_WIDTH_PX - 160
 );
 
-/** Extra vertical slack for `.inline-suggestion` padding and chrome above/below the text block. */
-const INLINE_SUGGESTION_CHROME_VERTICAL_PX = 36;
+/** Extra vertical slack for `.inline-suggestion` padding, chrome, underline, and loading row. */
+const INLINE_SUGGESTION_CHROME_VERTICAL_PX = 52;
+
+/** Accept/Reject row + margins — Pretext only measures text; without this we under-reserve flow space. */
+const INLINE_SUGGESTION_ACTIONS_ROW_PX = 58;
 
 /** Hard ceiling so pathological input cannot insert thousands of empty paragraphs. */
 const MAX_SPACER_PARAGRAPHS = 220;
@@ -47,14 +51,22 @@ export function measureRewriteLayout(text: string): { lineCount: number; height:
  */
 export function measureInlineSuggestionBlockHeightPx(text: string): number {
   const t = text ?? "";
-  if (t.length === 0) return INLINE_SUGGESTION_CHROME_VERTICAL_PX;
+  if (t.length === 0) {
+    return (
+      INLINE_SUGGESTION_CHROME_VERTICAL_PX + INLINE_SUGGESTION_ACTIONS_ROW_PX
+    );
+  }
   const prepared = prepare(t, EDITOR_TIPTAP_CANVAS_FONT, { whiteSpace: "normal" });
   const { height } = layout(
     prepared,
     EDITOR_INLINE_SUGGESTION_TEXT_MAX_WIDTH_PX,
     EDITOR_INLINE_SUGGESTION_LAYOUT_LINE_HEIGHT_PX
   );
-  return height + INLINE_SUGGESTION_CHROME_VERTICAL_PX;
+  return (
+    height +
+    INLINE_SUGGESTION_CHROME_VERTICAL_PX +
+    INLINE_SUGGESTION_ACTIONS_ROW_PX
+  );
 }
 
 /**
@@ -64,7 +76,7 @@ export function measureInlineSuggestionBlockHeightPx(text: string): number {
 export function targetSpacerParagraphCountForRewrite(rewriteText: string): number {
   const blockPx = measureInlineSuggestionBlockHeightPx(rewriteText);
   const lines = Math.ceil(blockPx / EDITOR_REWRITE_LINE_HEIGHT_PX);
-  const withBuffer = lines + 3;
+  const withBuffer = lines + 8;
   return Math.min(MAX_SPACER_PARAGRAPHS, Math.max(1, withBuffer));
 }
 
@@ -84,5 +96,5 @@ export function extraSpacerParagraphsNeeded(
 /** Upper bound for overlap-repair inserts so long rewrites can still nudge until the card clears. */
 export function maxOverlapRepairExtraParas(rewriteText: string): number {
   const target = targetSpacerParagraphCountForRewrite(rewriteText);
-  return Math.min(MAX_SPACER_PARAGRAPHS, target + 24);
+  return Math.min(MAX_SPACER_PARAGRAPHS, target + 48);
 }

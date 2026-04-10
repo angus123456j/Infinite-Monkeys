@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import Editor from "../components/Editor";
-import DocMenuBar, { type WritingEffectId } from "../components/DocMenuBar";
+import DocMenuBar from "../components/DocMenuBar";
 import FindReplaceModal from "../components/FindReplaceModal";
 import WordCountModal from "../components/WordCountModal";
 import KeyboardShortcutsModal from "../components/KeyboardShortcutsModal";
@@ -20,7 +20,6 @@ export default function EditorPage() {
   const [findReplaceOpen, setFindReplaceOpen] = useState(false);
   const [wordCountOpen, setWordCountOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [writingEffect, setWritingEffect] = useState<WritingEffectId>("none");
   const [exportingToContext, setExportingToContext] = useState(false);
 
   useEffect(() => {
@@ -112,7 +111,6 @@ export default function EditorPage() {
               onOpenFindReplace={() => setFindReplaceOpen(true)}
               onOpenWordCount={() => setWordCountOpen(true)}
               onOpenKeyboardShortcuts={() => setShortcutsOpen(true)}
-              onSelectWritingEffect={setWritingEffect}
             />
           </div>
           <div className="title-bar-actions">
@@ -134,7 +132,6 @@ export default function EditorPage() {
           initialContent={initialContent}
           onSaveContent={handleSaveContent}
           onEditorReady={setEditor}
-          writingEffect={writingEffect}
         />
       </div>
       {findReplaceOpen && (

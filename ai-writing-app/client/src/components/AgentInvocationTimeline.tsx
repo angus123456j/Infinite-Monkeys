@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 
 export interface AgentInvocationLogEntry {
   id: number;
@@ -34,34 +34,24 @@ export default function AgentInvocationTimeline({
   entries,
   onCollapse,
 }: AgentInvocationTimelineProps) {
-  const [openId, setOpenId] = useState<number | null>(null);
-  const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const clearLeave = useCallback(() => {
-    if (leaveTimer.current) {
-      clearTimeout(leaveTimer.current);
-      leaveTimer.current = null;
-    }
+  // Note: we intentionally key expansion by row index (not entry.id).
+  // Entry IDs can collide (e.g. older sessions or mixed counters), and using index
+  // guarantees a click only expands the exact row the user clicked.
+  const [openIdx, setOpenIdx] = useState<number | null>(null);
+  const toggleOpen = useCallback((idx: number) => {
+    setOpenIdx((prev) => (prev === idx ? null : idx));
   }, []);
-
-  const handleEnter = useCallback(
-    (id: number) => {
-      clearLeave();
-      setOpenId(id);
-    },
-    [clearLeave]
-  );
-
-  const handleLeave = useCallback(() => {
-    clearLeave();
-    leaveTimer.current = setTimeout(() => setOpenId(null), 180);
-  }, [clearLeave]);
 
   return (
     <aside className="agent-invocation-timeline" aria-label="Monkey timeline">
       <div className="agent-invocation-timeline-inner">
         <div className="agent-invocation-timeline-header">
-          <h3 className="agent-invocation-timeline-heading">{TIMELINE_TITLE}</h3>
+          <div className="agent-invocation-timeline-header-main">
+            <h3 className="agent-invocation-timeline-heading">{TIMELINE_TITLE}</h3>
+            <p className="agent-invocation-timeline-hint">
+              Click a milestone to expand it.
+            </p>
+          </div>
           {onCollapse ? (
             <button
               type="button"
@@ -77,14 +67,18 @@ export default function AgentInvocationTimeline({
 
         {entries.length === 0 ? null : (
           <ol className="agent-invocation-timeline-list">
-          {entries.map((e) => (
+          {entries.map((e, idx) => (
             <li
-              key={e.id}
+              key={`${e.id}-${e.at}-${idx}`}
               className="agent-invocation-timeline-item"
-              onMouseEnter={() => handleEnter(e.id)}
-              onMouseLeave={handleLeave}
             >
-              <div className="agent-invocation-timeline-item-head">
+              <button
+                type="button"
+                className="agent-invocation-timeline-item-head"
+                onClick={() => toggleOpen(idx)}
+                aria-expanded={openIdx === idx}
+                aria-controls={`agent-invocation-details-${idx}`}
+              >
                 <div className="agent-invocation-timeline-connector">
                   <span className="agent-invocation-dash" aria-hidden />
                   <span className="agent-invocation-dot-wrap">
@@ -102,13 +96,11 @@ export default function AgentInvocationTimeline({
                     {e.agentName}
                   </span>
                 </span>
-              </div>
-              {openId === e.id && (
+              </button>
+              {openIdx === idx && (
                 <div
+                  id={`agent-invocation-details-${idx}`}
                   className="agent-invocation-popover"
-                  onMouseEnter={() => handleEnter(e.id)}
-                  onMouseLeave={handleLeave}
-                  role="tooltip"
                 >
                   <div className="agent-invocation-popover-section">
                     <span className="agent-invocation-popover-label">Agent</span>

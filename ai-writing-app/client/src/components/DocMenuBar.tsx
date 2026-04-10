@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useEditorContext } from "../contexts/EditorContext";
 
-const MENU_ITEMS = ["Edit", "Tools", "Extensions"] as const;
+const MENU_ITEMS = ["Edit", "Tools"] as const;
 
 type MenuKey = (typeof MENU_ITEMS)[number];
 
@@ -19,7 +19,6 @@ const MENU_OPTIONS: Record<MenuKey, MenuOption[]> = {
     { label: "Paste", action: "edit.paste" },
     { label: "Find and replace", action: "edit.findReplace" },
     { label: "Select all", action: "edit.selectAll" },
-    { label: "Print", action: "edit.print" },
   ],
   Tools: [
     { label: "Spelling and grammar", action: "tools.spelling" },
@@ -28,38 +27,17 @@ const MENU_OPTIONS: Record<MenuKey, MenuOption[]> = {
     { label: "Translate document", action: "tools.translate" },
     { label: "Preferences", action: "tools.prefs" },
   ],
-  Extensions: [
-    { label: "Writing effect: None", action: "effect.none" },
-    { label: "Writing effect: Earthquake", action: "effect.earthquake" },
-    { label: "Writing effect: Hallucinogenics", action: "effect.hallucinogenics" },
-    { label: "Writing effect: Vanish", action: "effect.vanish" },
-    { label: "Writing effect: Glitch", action: "effect.glitch" },
-    { label: "Writing effect: Rainbow", action: "effect.rainbow" },
-    { label: "Writing effect: Neon", action: "effect.neon" },
-    { label: "Writing effect: Float", action: "effect.float" },
-  ],
 };
-
-export type WritingEffectId =
-  | "none"
-  | "earthquake"
-  | "hallucinogenics"
-  | "vanish"
-  | "glitch"
-  | "rainbow"
-  | "neon"
-  | "float";
 
 export interface DocMenuBarCallbacks {
   onOpenFindReplace?: () => void;
   onOpenWordCount?: () => void;
   onOpenKeyboardShortcuts?: () => void;
   onDownload?: (html: string) => void;
-  onSelectWritingEffect?: (effect: WritingEffectId) => void;
 }
 
 export default function DocMenuBar(callbacks: DocMenuBarCallbacks = {}) {
-  const { onOpenFindReplace, onOpenWordCount, onSelectWritingEffect } = callbacks;
+  const { onOpenFindReplace, onOpenWordCount } = callbacks;
   const editor = useEditorContext();
   const [openMenu, setOpenMenu] = useState<MenuKey | null>(null);
   const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null);
@@ -100,14 +78,8 @@ export default function DocMenuBar(callbacks: DocMenuBarCallbacks = {}) {
     else if (action === "edit.paste") document.execCommand("paste");
     else if (action === "edit.findReplace") onOpenFindReplace?.();
     else if (action === "edit.selectAll" && editor) editor.chain().focus().selectAll().run();
-    else if (action === "edit.print") window.print();
 
     else if (action === "tools.wordCount") onOpenWordCount?.();
-
-    else if (action.startsWith("effect.")) {
-      const id = action.replace("effect.", "") as WritingEffectId;
-      onSelectWritingEffect?.(id === "none" ? "none" : id);
-    }
   };
 
   return (
