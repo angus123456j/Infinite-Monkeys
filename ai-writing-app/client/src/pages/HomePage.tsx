@@ -3,8 +3,8 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createDoc } from "../lib/docs";
 
 const VIDEO_PATH = "/models/monkeyvid.mp4";
-/** Product demo: add `client/public/videos/product-demo.mp4` (screen recording). */
-const HERO_DEMO_VIDEO = "/videos/product-demo.mp4";
+/** Swap to `/videos/product-demo.mp4` after adding `client/public/videos/product-demo.mp4`. */
+const HERO_DEMO_VIDEO = VIDEO_PATH;
 const AUTO_SCROLL_AT = 0.9;
 const TYPEWRITER_LINE1 = "Infinite drafts. One perfect sentence.";
 const TYPEWRITER_LINE2 = "Write alongside infinite minds.";
