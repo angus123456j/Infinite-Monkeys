@@ -15,11 +15,9 @@ WORKDIR /app
 
 COPY package.json package-lock.json ./
 COPY client/package.json client/
-COPY server/package.json server/
+COPY server ./server
 
 RUN npm ci
-
-COPY server ./server
 
 RUN npm run build --workspace=server
 

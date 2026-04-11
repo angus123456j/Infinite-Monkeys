@@ -1,8 +1,30 @@
-node_modules
-**/node_modules
-client/node_modules
-**/dist
-.git
-*.md
-.cache
-**/.cache
+# Scrutiny service only (ONNX / Hugging Face — cannot run on Supabase Edge).
+#
+# Build from this directory (ai-writing-app):
+#   docker build -f Dockerfile.scrutiny -t infinite-monkeys-scrutiny .
+#
+# Run:
+#   docker run --env-file server/.env -p 3001:3001 infinite-monkeys-scrutiny
+#
+# First request may be slow while the model downloads into the container (set SCRUTINY_MODEL_CACHE_DIR
+# to a mounted volume in production if you want a warm cache).
+
+FROM node:20-bookworm
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+COPY client/package.json client/
+COPY server ./server
+
+RUN npm ci
+
+RUN npm run build --workspace=server
+
+WORKDIR /app/server
+
+ENV NODE_ENV=production
+
+EXPOSE 3001
+
+CMD ["node", "dist/index.js"]
