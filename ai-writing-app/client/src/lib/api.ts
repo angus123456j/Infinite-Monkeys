@@ -1,8 +1,10 @@
 /**
- * Base URL for the backend API.
- * - In dev, default is same-origin (`""`) so requests go through Vite's proxy; the proxy injects
- *   `X-Shared-Secret` from `server/.env` (see vite.config.ts). No `VITE_SHARED_SECRET` needed locally.
- * - Set `VITE_API_URL` to call the API directly (then set `VITE_SHARED_SECRET` to match the server).
+ * HTTP client for the Scrutiny service only (`/api/scrutiny/*`).
+ * Rewrite, orchestrator, and agent search use Supabase Edge Functions.
+ *
+ * - Dev: Vite proxies `/api/scrutiny` → localhost:3001 and can inject X-Shared-Secret from server/.env.
+ * - Production: set `VITE_API_URL` to your deployed scrutiny base URL (no trailing slash),
+ *   and `VITE_SHARED_SECRET` if the service requires it.
  */
 const raw = (import.meta.env.VITE_API_URL as string) ?? "";
 const explicitApiUrl = raw.trim();
@@ -14,7 +16,6 @@ export const API_BASE = explicitApiUrl
     ? ""
     : "http://localhost:3001";
 
-/** When calling the API host directly (not via dev proxy), must match server `SHARED_SECRET`. */
 const SHARED_SECRET = (import.meta.env.VITE_SHARED_SECRET as string | undefined)?.trim();
 
 const sendClientSecretHeader = Boolean(SHARED_SECRET) && !useDevProxy;

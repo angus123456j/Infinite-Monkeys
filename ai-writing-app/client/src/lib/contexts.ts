@@ -1,4 +1,4 @@
-import { apiFetch } from "./api";
+import { supabase } from "./supabase";
 
 export interface ContextItem {
   id: string;
@@ -9,7 +9,7 @@ export interface ContextItem {
   lastUsedAt: number | null;
 }
 
-interface ApiContext {
+interface DbContext {
   id: string;
   title: string;
   description: string;
@@ -19,7 +19,7 @@ interface ApiContext {
   lastUsedAt: string | null;
 }
 
-function mapFromApi(c: ApiContext): ContextItem {
+function toContextItem(c: DbContext): ContextItem {
   return {
     id: c.id,
     title: c.title,
@@ -31,19 +31,23 @@ function mapFromApi(c: ApiContext): ContextItem {
 }
 
 export async function listContexts(): Promise<ContextItem[]> {
-  const list = await apiFetch<ApiContext[]>("/api/contexts");
-  return list.map(mapFromApi).sort(
-    (a, b) => (b.lastUsedAt ?? b.createdAt) - (a.lastUsedAt ?? a.createdAt)
-  );
+  const { data, error } = await supabase
+    .from("contexts")
+    .select("*")
+    .order("lastUsedAt", { ascending: false, nullsFirst: false })
+    .order("createdAt", { ascending: false });
+  if (error) throw new Error(error.message);
+  return (data as DbContext[]).map(toContextItem);
 }
 
 export async function getContext(id: string): Promise<ContextItem | null> {
-  try {
-    const c = await apiFetch<ApiContext>(`/api/contexts/${id}`);
-    return mapFromApi(c);
-  } catch {
-    return null;
-  }
+  const { data, error } = await supabase
+    .from("contexts")
+    .select("*")
+    .eq("id", id)
+    .single();
+  if (error) return null;
+  return toContextItem(data as DbContext);
 }
 
 export async function createContext(partial?: {
@@ -51,15 +55,17 @@ export async function createContext(partial?: {
   description?: string;
   tags?: string[];
 }): Promise<ContextItem> {
-  const c = await apiFetch<ApiContext>("/api/contexts", {
-    method: "POST",
-    body: JSON.stringify({
+  const { data, error } = await supabase
+    .from("contexts")
+    .insert({
       title: partial?.title?.trim() || "Untitled context",
       description: partial?.description ?? "",
       tags: partial?.tags ?? [],
-    }),
-  });
-  return mapFromApi(c);
+    })
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return toContextItem(data as DbContext);
 }
 
 export async function updateContext(
@@ -70,13 +76,19 @@ export async function updateContext(
   if (updates.title !== undefined) body.title = updates.title;
   if (updates.description !== undefined) body.description = updates.description;
   if (updates.tags !== undefined) body.tags = updates.tags;
-  if (updates.lastUsedAt !== undefined) body.lastUsedAt = updates.lastUsedAt;
-  await apiFetch(`/api/contexts/${id}`, {
-    method: "PATCH",
-    body: JSON.stringify(body),
-  });
+  if (updates.lastUsedAt !== undefined) {
+    body.lastUsedAt = updates.lastUsedAt
+      ? new Date(updates.lastUsedAt).toISOString()
+      : null;
+  }
+  const { error } = await supabase
+    .from("contexts")
+    .update(body)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
 }
 
 export async function deleteContext(id: string): Promise<void> {
-  await apiFetch(`/api/contexts/${id}`, { method: "DELETE" });
+  const { error } = await supabase.from("contexts").delete().eq("id", id);
+  if (error) throw new Error(error.message);
 }

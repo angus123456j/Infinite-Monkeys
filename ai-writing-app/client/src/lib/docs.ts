@@ -1,4 +1,4 @@
-import { apiFetch } from "./api";
+import { supabase } from "./supabase";
 import type { AgentInvocationLogEntry } from "../components/AgentInvocationTimeline";
 
 export interface DocMeta {
@@ -25,13 +25,17 @@ export interface DocumentWithContent extends DocMeta {
   monkeyTimeline?: unknown;
 }
 
-function mapDocFromApi(d: {
+interface DbDocument {
   id: string;
   title: string;
+  content: string;
   createdAt: string;
   updatedAt: string;
-  folderId?: string | null;
-}): DocMeta {
+  folderId: string | null;
+  monkeyTimeline: unknown;
+}
+
+function toDocMeta(d: DbDocument): DocMeta {
   return {
     id: d.id,
     title: d.title,
@@ -62,13 +66,15 @@ function saveFolders(folders: FolderMeta[]) {
   localStorage.setItem(FOLDERS_STORAGE_KEY, JSON.stringify(folders));
 }
 
-// ——— Documents (API) ———
+// ——— Documents (Supabase) ———
 
 export async function listDocs(): Promise<DocMeta[]> {
-  const list = (await apiFetch<Array<{ id: string; title: string; createdAt: string; updatedAt: string; folderId?: string | null }>>(
-    "/api/documents"
-  )) as Array<{ id: string; title: string; createdAt: string; updatedAt: string; folderId?: string | null }>;
-  return list.map(mapDocFromApi).sort((a, b) => b.createdAt - a.createdAt);
+  const { data, error } = await supabase
+    .from("documents")
+    .select("id, title, createdAt, updatedAt, folderId")
+    .order("createdAt", { ascending: false });
+  if (error) throw new Error(error.message);
+  return (data as DbDocument[]).map(toDocMeta);
 }
 
 export async function createDoc(options?: {
@@ -77,62 +83,52 @@ export async function createDoc(options?: {
 }): Promise<DocMeta> {
   const title = options?.title?.trim() || "Untitled document";
   const folderId = options?.folderId ?? null;
-  const d = await apiFetch<{ id: string; title: string; createdAt: string; updatedAt: string; folderId?: string | null }>(
-    "/api/documents",
-    {
-      method: "POST",
-      body: JSON.stringify({
-        title,
-        content: "<p></p>",
-        folderId,
-      }),
-    }
-  );
-  return mapDocFromApi(d);
+  const { data, error } = await supabase
+    .from("documents")
+    .insert({ title, content: "<p></p>", folderId })
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return toDocMeta(data as DbDocument);
 }
 
 export async function getDoc(id: string): Promise<DocMeta | null> {
-  try {
-    const d = await apiFetch<{ id: string; title: string; createdAt: string; updatedAt: string; folderId?: string | null }>(
-      `/api/documents/${id}`
-    );
-    return mapDocFromApi(d);
-  } catch {
-    return null;
-  }
+  const { data, error } = await supabase
+    .from("documents")
+    .select("id, title, createdAt, updatedAt, folderId")
+    .eq("id", id)
+    .single();
+  if (error) return null;
+  return toDocMeta(data as DbDocument);
 }
 
 /** Fetch full document including content (for editor). */
 export async function getDocument(id: string): Promise<DocumentWithContent | null> {
-  try {
-    const d = await apiFetch<{
-      id: string;
-      title: string;
-      content: string;
-      createdAt: string;
-      updatedAt: string;
-      folderId?: string | null;
-      monkeyTimeline?: unknown;
-    }>(`/api/documents/${id}`);
-    return {
-      ...mapDocFromApi(d),
-      content: d.content ?? "<p></p>",
-      monkeyTimeline: d.monkeyTimeline,
-    };
-  } catch {
-    return null;
-  }
+  const { data, error } = await supabase
+    .from("documents")
+    .select("*")
+    .eq("id", id)
+    .single();
+  if (error) return null;
+  const d = data as DbDocument;
+  return {
+    ...toDocMeta(d),
+    content: d.content ?? "<p></p>",
+    monkeyTimeline: d.monkeyTimeline,
+  };
 }
 
 export async function deleteDoc(id: string): Promise<void> {
-  await apiFetch(`/api/documents/${id}`, { method: "DELETE" });
+  const { error } = await supabase.from("documents").delete().eq("id", id);
+  if (error) throw new Error(error.message);
 }
 
 export async function updateDocTitle(id: string, title: string): Promise<void> {
-  await apiFetch(`/api/documents/${id}`, {
-    method: "PATCH",
-    body: JSON.stringify({ title }),
-  });
+  const { error } = await supabase
+    .from("documents")
+    .update({ title })
+    .eq("id", id);
+  if (error) throw new Error(error.message);
 }
 
 export async function saveDoc(
@@ -144,10 +140,11 @@ export async function saveDoc(
     monkeyTimeline?: AgentInvocationLogEntry[];
   }
 ): Promise<void> {
-  await apiFetch(`/api/documents/${id}`, {
-    method: "PATCH",
-    body: JSON.stringify(updates),
-  });
+  const { error } = await supabase
+    .from("documents")
+    .update(updates)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
 }
 
 /** List documents in the given folder (root when folderId is null). */
@@ -158,10 +155,11 @@ export function listDocsInFolder(docs: DocMeta[], folderId: string | null): DocM
 }
 
 export async function moveDoc(id: string, targetFolderId: string | null): Promise<void> {
-  await apiFetch(`/api/documents/${id}`, {
-    method: "PATCH",
-    body: JSON.stringify({ folderId: targetFolderId }),
-  });
+  const { error } = await supabase
+    .from("documents")
+    .update({ folderId: targetFolderId })
+    .eq("id", id);
+  if (error) throw new Error(error.message);
 }
 
 // ——— Folders (localStorage for now) ———
@@ -220,7 +218,6 @@ export async function deleteFolder(id: string) {
   const remainingFolders = folders.filter((f) => !toDelete.has(f.id));
   saveFolders(remainingFolders);
 
-  // Move documents in deleted folders to root (or delete them — we move to root)
   for (const doc of docs) {
     if (doc.folderId && toDelete.has(doc.folderId)) {
       await moveDoc(doc.id, null);

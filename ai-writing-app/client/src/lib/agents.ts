@@ -1,4 +1,4 @@
-import { apiFetch } from "./api";
+import { supabase } from "./supabase";
 
 export const AGENT_ARCHETYPES = [
   "Specialist",
@@ -38,12 +38,12 @@ export interface AgentMeta {
   updatedAt: number;
 }
 
-interface ApiAgent {
+interface DbAgent {
   id: string;
   name: string;
   role: string;
   strengths: string;
-  avatar?: string | null;
+  avatar: string | null;
   defaultPrompt: string;
   identity: string;
   behavior: string;
@@ -52,7 +52,7 @@ interface ApiAgent {
   updatedAt: string;
 }
 
-function mapFromApi(a: ApiAgent): AgentMeta {
+function toAgentMeta(a: DbAgent): AgentMeta {
   return {
     id: a.id,
     name: a.name,
@@ -77,17 +77,22 @@ function buildDefaultPrompt(identity: string, behavior: string, constraints: str
 }
 
 export async function listAgents(): Promise<AgentMeta[]> {
-  const list = await apiFetch<ApiAgent[]>("/api/agents");
-  return list.map(mapFromApi).sort((a, b) => b.updatedAt - a.updatedAt);
+  const { data, error } = await supabase
+    .from("monkey_agents")
+    .select("*")
+    .order("updatedAt", { ascending: false });
+  if (error) throw new Error(error.message);
+  return (data as DbAgent[]).map(toAgentMeta);
 }
 
 export async function getAgent(id: string): Promise<AgentMeta | null> {
-  try {
-    const a = await apiFetch<ApiAgent>(`/api/agents/${id}`);
-    return mapFromApi(a);
-  } catch {
-    return null;
-  }
+  const { data, error } = await supabase
+    .from("monkey_agents")
+    .select("*")
+    .eq("id", id)
+    .single();
+  if (error) return null;
+  return toAgentMeta(data as DbAgent);
 }
 
 export async function createAgent(partial?: {
@@ -97,9 +102,9 @@ export async function createAgent(partial?: {
   defaultPrompt?: string;
   avatar?: string;
 }): Promise<AgentMeta> {
-  const a = await apiFetch<ApiAgent>("/api/agents", {
-    method: "POST",
-    body: JSON.stringify({
+  const { data, error } = await supabase
+    .from("monkey_agents")
+    .insert({
       name: partial?.name?.trim() || "New monkey",
       role: partial?.role ?? "Specialist",
       strengths: partial?.strengths ?? "",
@@ -108,9 +113,11 @@ export async function createAgent(partial?: {
       identity: "",
       behavior: "",
       constraints: "",
-    }),
-  });
-  return mapFromApi(a);
+    })
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return toAgentMeta(data as DbAgent);
 }
 
 export async function updateAgent(
@@ -132,8 +139,6 @@ export async function updateAgent(
     updates.behavior !== undefined ||
     updates.constraints !== undefined
   ) {
-    // Rebuild defaultPrompt from the fields we know about.
-    // We need the current values for fields not in `updates`, so fetch first.
     const current = await getAgent(id);
     if (current) {
       body.defaultPrompt = buildDefaultPrompt(
@@ -143,15 +148,19 @@ export async function updateAgent(
       );
     }
   }
-  await apiFetch(`/api/agents/${id}`, {
-    method: "PATCH",
-    body: JSON.stringify(body),
-  });
+  const { error } = await supabase
+    .from("monkey_agents")
+    .update(body)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
 }
 
 export async function deleteAgent(id: string): Promise<void> {
-  await apiFetch(`/api/agents/${id}`, { method: "DELETE" });
+  const { error } = await supabase.from("monkey_agents").delete().eq("id", id);
+  if (error) throw new Error(error.message);
 }
+
+// ——— Search (still hits Express server — uses LLM) ———
 
 export interface AgentSearchMatch {
   id: string;
@@ -162,12 +171,9 @@ export async function searchAgents(
   query: string,
   topK = 10
 ): Promise<AgentSearchMatch[]> {
-  const data = await apiFetch<{ matches: AgentSearchMatch[] }>(
-    "/api/agents/search",
-    {
-      method: "POST",
-      body: JSON.stringify({ query, topK }),
-    }
-  );
-  return data.matches;
+  const { data, error } = await supabase.functions.invoke("agent-search", {
+    body: { query, topK },
+  });
+  if (error) throw error;
+  return (data as { matches: AgentSearchMatch[] }).matches;
 }

@@ -35,7 +35,7 @@ import { getAgent, listAgents, type AgentMeta } from "../lib/agents";
 import { listContexts } from "../lib/contexts";
 import { saveDoc } from "../lib/docs";
 import { extractSentenceContext } from "../lib/extractSentenceContext";
-import { apiFetch } from "../lib/api";
+import { supabase } from "../lib/supabase";
 import {
   extraSpacerParagraphsNeeded,
   maxOverlapRepairExtraParas,
@@ -1337,11 +1337,11 @@ function Editor({
       if (trimmedCtx) payload.sentenceContext = trimmedCtx;
       payload.llmProvider = llmProvider;
 
-      const data = await apiFetch<{ rewrite: string }>("/api/rewrite", {
-        method: "POST",
-        body: JSON.stringify(payload),
+      const { data, error } = await supabase.functions.invoke("rewrite", {
+        body: payload,
       });
-      return data.rewrite;
+      if (error) throw error;
+      return (data as { rewrite: string }).rewrite;
     },
     [llmProvider]
   );
@@ -1427,17 +1427,20 @@ function Editor({
     setOrchestratorIsProposing(true);
     try {
       const instruction = (orchestratorInstruction.trim() || prompt.trim()).trim();
-      const resp = await apiFetch<{ sequence: string[] }>("/api/orchestrator/plan", {
-        method: "POST",
-        body: JSON.stringify({
-          text: sel.text,
-          prompt: instruction,
-          llmProvider,
-        }),
-      });
+      const { data: resp, error: orchErr } = await supabase.functions.invoke(
+        "orchestrator-plan",
+        {
+          body: {
+            text: sel.text,
+            prompt: instruction,
+            llmProvider,
+          },
+        },
+      );
+      if (orchErr) throw orchErr;
 
-      const seq = (resp.sequence ?? []).filter((id) =>
-        orchestratorSpecialists.some((a) => a.id === id)
+      const seq = (((resp as { sequence?: string[] })?.sequence) ?? []).filter(
+        (id: string) => orchestratorSpecialists.some((a) => a.id === id)
       );
 
       if (seq.length === 0) {
