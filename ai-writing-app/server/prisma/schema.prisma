@@ -11,12 +11,14 @@ datasource db {
 }
 
 model Document {
-  id        String   @id @default(cuid())
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  title     String
-  content   String   @db.Text
-  folderId  String?
+  id             String   @id @default(cuid())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  title          String
+  content        String   @db.Text
+  folderId       String?
+  /// Serialized monkey invocation timeline (AgentInvocationLogEntry[]).
+  monkeyTimeline Json     @default("[]")
 }
 
 model Context {

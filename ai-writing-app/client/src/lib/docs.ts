@@ -1,4 +1,5 @@
 import { apiFetch } from "./api";
+import type { AgentInvocationLogEntry } from "../components/AgentInvocationTimeline";
 
 export interface DocMeta {
   id: string;
@@ -20,6 +21,8 @@ export interface FolderMeta {
 /** Full document from API (meta + content). */
 export interface DocumentWithContent extends DocMeta {
   content: string;
+  /** Raw timeline JSON from API; normalize with `parseMonkeyTimeline` from `lib/monkeyTimeline`. */
+  monkeyTimeline?: unknown;
 }
 
 function mapDocFromApi(d: {
@@ -109,10 +112,12 @@ export async function getDocument(id: string): Promise<DocumentWithContent | nul
       createdAt: string;
       updatedAt: string;
       folderId?: string | null;
+      monkeyTimeline?: unknown;
     }>(`/api/documents/${id}`);
     return {
       ...mapDocFromApi(d),
       content: d.content ?? "<p></p>",
+      monkeyTimeline: d.monkeyTimeline,
     };
   } catch {
     return null;
@@ -132,7 +137,12 @@ export async function updateDocTitle(id: string, title: string): Promise<void> {
 
 export async function saveDoc(
   id: string,
-  updates: { title?: string; content?: string; folderId?: string | null }
+  updates: {
+    title?: string;
+    content?: string;
+    folderId?: string | null;
+    monkeyTimeline?: AgentInvocationLogEntry[];
+  }
 ): Promise<void> {
   await apiFetch(`/api/documents/${id}`, {
     method: "PATCH",

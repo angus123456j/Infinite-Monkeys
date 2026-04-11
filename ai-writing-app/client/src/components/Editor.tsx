@@ -33,6 +33,7 @@ import { joinForward } from "@tiptap/pm/commands";
 import type { EditorView } from "@tiptap/pm/view";
 import { getAgent, listAgents, type AgentMeta } from "../lib/agents";
 import { listContexts } from "../lib/contexts";
+import { saveDoc } from "../lib/docs";
 import { extractSentenceContext } from "../lib/extractSentenceContext";
 import { apiFetch } from "../lib/api";
 import {
@@ -303,6 +304,7 @@ function isSynonymSpecialistAgentName(name: string): boolean {
 }
 
 const SAVE_DEBOUNCE_MS = 1500;
+const TIMELINE_SAVE_DEBOUNCE_MS = 1500;
 const PERIODIC_SAVE_MS = 30_000;
 
 const LLM_PROVIDER_STORAGE_KEY = "im-llm-provider";
@@ -320,12 +322,22 @@ function readStoredLlmProvider(): LlmProviderChoice {
 
 interface EditorProps {
   docId?: string;
+  /** When set, monkey timeline is loaded/saved for this document (not used on context-only pages). */
+  timelineDocumentId?: string;
   initialContent?: string;
+  initialMonkeyTimeline?: AgentInvocationLogEntry[];
   onSaveContent?: (content: string) => void;
   onEditorReady?: (editor: TiptapEditor) => void;
 }
 
-function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorReady }: EditorProps) {
+function Editor({
+  docId,
+  timelineDocumentId,
+  initialContent = "<p></p>",
+  initialMonkeyTimeline = [],
+  onSaveContent,
+  onEditorReady,
+}: EditorProps) {
   const editor = useEditor({
     extensions: [
       StarterKit,
@@ -556,8 +568,55 @@ function Editor({ docId, initialContent = "<p></p>", onSaveContent, onEditorRead
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [selectedContextIds, setSelectedContextIds] = useState<string[]>([]);
   const [invocationLog, setInvocationLog] = useState<AgentInvocationLogEntry[]>(
-    []
+    () => initialMonkeyTimeline
   );
+
+  const invocationLogRef = useRef(invocationLog);
+  useEffect(() => {
+    invocationLogRef.current = invocationLog;
+  }, [invocationLog]);
+
+  useEffect(() => {
+    if (!initialMonkeyTimeline.length) return;
+    const maxId = Math.max(...initialMonkeyTimeline.map((e) => e.id));
+    if (Number.isFinite(maxId)) {
+      nextInvocationId = Math.max(nextInvocationId, maxId + 1);
+    }
+  }, [initialMonkeyTimeline]);
+
+  const timelineSaveSkippedRef = useRef(true);
+  useEffect(() => {
+    if (!timelineDocumentId) return;
+    if (timelineSaveSkippedRef.current) {
+      timelineSaveSkippedRef.current = false;
+      return;
+    }
+    const t = window.setTimeout(() => {
+      void saveDoc(timelineDocumentId, { monkeyTimeline: invocationLogRef.current });
+    }, TIMELINE_SAVE_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [invocationLog, timelineDocumentId]);
+
+  useEffect(() => {
+    if (!timelineDocumentId) return;
+    const flush = () => {
+      void saveDoc(timelineDocumentId, {
+        monkeyTimeline: invocationLogRef.current,
+      });
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    const onBeforeUnload = () => {
+      flush();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }, [timelineDocumentId]);
 
   // Multiple inline suggestions state
   const [pendingRewrites, setPendingRewrites] = useState<PendingRewrite[]>([]);

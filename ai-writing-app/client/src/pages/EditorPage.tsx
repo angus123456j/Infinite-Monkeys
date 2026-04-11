@@ -7,6 +7,8 @@ import WordCountModal from "../components/WordCountModal";
 import KeyboardShortcutsModal from "../components/KeyboardShortcutsModal";
 import EditorContext from "../contexts/EditorContext";
 import { getDocument, updateDocTitle, saveDoc } from "../lib/docs";
+import { parseMonkeyTimeline } from "../lib/monkeyTimeline";
+import type { AgentInvocationLogEntry } from "../components/AgentInvocationTimeline";
 import { createContext } from "../lib/contexts";
 import type { Editor as TiptapEditor } from "@tiptap/react";
 
@@ -16,6 +18,9 @@ export default function EditorPage() {
   const [editor, setEditor] = useState<TiptapEditor | null>(null);
   const [title, setTitle] = useState("Untitled document");
   const [initialContent, setInitialContent] = useState<string>("<p></p>");
+  const [initialMonkeyTimeline, setInitialMonkeyTimeline] = useState<
+    AgentInvocationLogEntry[]
+  >([]);
   const [loading, setLoading] = useState(!!id);
   const [findReplaceOpen, setFindReplaceOpen] = useState(false);
   const [wordCountOpen, setWordCountOpen] = useState(false);
@@ -32,6 +37,7 @@ export default function EditorPage() {
         if (doc) {
           setTitle(doc.title);
           setInitialContent(doc.content || "<p></p>");
+          setInitialMonkeyTimeline(parseMonkeyTimeline(doc.monkeyTimeline));
         }
         setLoading(false);
       })
@@ -129,7 +135,9 @@ export default function EditorPage() {
         <Editor
           key={id}
           docId={id ?? undefined}
+          timelineDocumentId={id ?? undefined}
           initialContent={initialContent}
+          initialMonkeyTimeline={initialMonkeyTimeline}
           onSaveContent={handleSaveContent}
           onEditorReady={setEditor}
         />

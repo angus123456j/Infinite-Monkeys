@@ -49,6 +49,7 @@ export type DocumentCountAggregateOutputType = {
   title: number
   content: number
   folderId: number
+  monkeyTimeline: number
   _all: number
 }
 
@@ -78,6 +79,7 @@ export type DocumentCountAggregateInputType = {
   title?: true
   content?: true
   folderId?: true
+  monkeyTimeline?: true
   _all?: true
 }
 
@@ -160,6 +162,7 @@ export type DocumentGroupByOutputType = {
   title: string
   content: string
   folderId: string | null
+  monkeyTimeline: runtime.JsonValue
   _count: DocumentCountAggregateOutputType | null
   _min: DocumentMinAggregateOutputType | null
   _max: DocumentMaxAggregateOutputType | null
@@ -190,6 +193,7 @@ export type DocumentWhereInput = {
   title?: Prisma.StringFilter<"Document"> | string
   content?: Prisma.StringFilter<"Document"> | string
   folderId?: Prisma.StringNullableFilter<"Document"> | string | null
+  monkeyTimeline?: Prisma.JsonFilter<"Document">
 }
 
 export type DocumentOrderByWithRelationInput = {
@@ -199,6 +203,7 @@ export type DocumentOrderByWithRelationInput = {
   title?: Prisma.SortOrder
   content?: Prisma.SortOrder
   folderId?: Prisma.SortOrderInput | Prisma.SortOrder
+  monkeyTimeline?: Prisma.SortOrder
   _relevance?: Prisma.DocumentOrderByRelevanceInput
 }
 
@@ -212,6 +217,7 @@ export type DocumentWhereUniqueInput = Prisma.AtLeast<{
   title?: Prisma.StringFilter<"Document"> | string
   content?: Prisma.StringFilter<"Document"> | string
   folderId?: Prisma.StringNullableFilter<"Document"> | string | null
+  monkeyTimeline?: Prisma.JsonFilter<"Document">
 }, "id">
 
 export type DocumentOrderByWithAggregationInput = {
@@ -221,6 +227,7 @@ export type DocumentOrderByWithAggregationInput = {
   title?: Prisma.SortOrder
   content?: Prisma.SortOrder
   folderId?: Prisma.SortOrderInput | Prisma.SortOrder
+  monkeyTimeline?: Prisma.SortOrder
   _count?: Prisma.DocumentCountOrderByAggregateInput
   _max?: Prisma.DocumentMaxOrderByAggregateInput
   _min?: Prisma.DocumentMinOrderByAggregateInput
@@ -236,6 +243,7 @@ export type DocumentScalarWhereWithAggregatesInput = {
   title?: Prisma.StringWithAggregatesFilter<"Document"> | string
   content?: Prisma.StringWithAggregatesFilter<"Document"> | string
   folderId?: Prisma.StringNullableWithAggregatesFilter<"Document"> | string | null
+  monkeyTimeline?: Prisma.JsonWithAggregatesFilter<"Document">
 }
 
 export type DocumentCreateInput = {
@@ -245,6 +253,7 @@ export type DocumentCreateInput = {
   title: string
   content: string
   folderId?: string | null
+  monkeyTimeline?: Prisma.JsonNullValueInput | runtime.InputJsonValue
 }
 
 export type DocumentUncheckedCreateInput = {
@@ -254,6 +263,7 @@ export type DocumentUncheckedCreateInput = {
   title: string
   content: string
   folderId?: string | null
+  monkeyTimeline?: Prisma.JsonNullValueInput | runtime.InputJsonValue
 }
 
 export type DocumentUpdateInput = {
@@ -263,6 +273,7 @@ export type DocumentUpdateInput = {
   title?: Prisma.StringFieldUpdateOperationsInput | string
   content?: Prisma.StringFieldUpdateOperationsInput | string
   folderId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  monkeyTimeline?: Prisma.JsonNullValueInput | runtime.InputJsonValue
 }
 
 export type DocumentUncheckedUpdateInput = {
@@ -272,6 +283,7 @@ export type DocumentUncheckedUpdateInput = {
   title?: Prisma.StringFieldUpdateOperationsInput | string
   content?: Prisma.StringFieldUpdateOperationsInput | string
   folderId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  monkeyTimeline?: Prisma.JsonNullValueInput | runtime.InputJsonValue
 }
 
 export type DocumentCreateManyInput = {
@@ -281,6 +293,7 @@ export type DocumentCreateManyInput = {
   title: string
   content: string
   folderId?: string | null
+  monkeyTimeline?: Prisma.JsonNullValueInput | runtime.InputJsonValue
 }
 
 export type DocumentUpdateManyMutationInput = {
@@ -290,6 +303,7 @@ export type DocumentUpdateManyMutationInput = {
   title?: Prisma.StringFieldUpdateOperationsInput | string
   content?: Prisma.StringFieldUpdateOperationsInput | string
   folderId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  monkeyTimeline?: Prisma.JsonNullValueInput | runtime.InputJsonValue
 }
 
 export type DocumentUncheckedUpdateManyInput = {
@@ -299,6 +313,7 @@ export type DocumentUncheckedUpdateManyInput = {
   title?: Prisma.StringFieldUpdateOperationsInput | string
   content?: Prisma.StringFieldUpdateOperationsInput | string
   folderId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  monkeyTimeline?: Prisma.JsonNullValueInput | runtime.InputJsonValue
 }
 
 export type DocumentOrderByRelevanceInput = {
@@ -314,6 +329,7 @@ export type DocumentCountOrderByAggregateInput = {
   title?: Prisma.SortOrder
   content?: Prisma.SortOrder
   folderId?: Prisma.SortOrder
+  monkeyTimeline?: Prisma.SortOrder
 }
 
 export type DocumentMaxOrderByAggregateInput = {
@@ -355,6 +371,7 @@ export type DocumentSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs
   title?: boolean
   content?: boolean
   folderId?: boolean
+  monkeyTimeline?: boolean
 }, ExtArgs["result"]["document"]>
 
 
@@ -366,9 +383,10 @@ export type DocumentSelectScalar = {
   title?: boolean
   content?: boolean
   folderId?: boolean
+  monkeyTimeline?: boolean
 }
 
-export type DocumentOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "createdAt" | "updatedAt" | "title" | "content" | "folderId", ExtArgs["result"]["document"]>
+export type DocumentOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "createdAt" | "updatedAt" | "title" | "content" | "folderId" | "monkeyTimeline", ExtArgs["result"]["document"]>
 
 export type $DocumentPayload<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   name: "Document"
@@ -380,6 +398,10 @@ export type $DocumentPayload<ExtArgs extends runtime.Types.Extensions.InternalAr
     title: string
     content: string
     folderId: string | null
+    /**
+     * Serialized monkey invocation timeline (AgentInvocationLogEntry[]).
+     */
+    monkeyTimeline: runtime.JsonValue
   }, ExtArgs["result"]["document"]>
   composites: {}
 }
@@ -755,6 +777,7 @@ export interface DocumentFieldRefs {
   readonly title: Prisma.FieldRef<"Document", 'String'>
   readonly content: Prisma.FieldRef<"Document", 'String'>
   readonly folderId: Prisma.FieldRef<"Document", 'String'>
+  readonly monkeyTimeline: Prisma.FieldRef<"Document", 'Json'>
 }
     
 

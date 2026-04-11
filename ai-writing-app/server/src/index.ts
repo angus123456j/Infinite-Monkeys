@@ -126,6 +126,13 @@ app.get("/api/documents", async (_req: Request, res: Response) => {
   try {
     const documents = await prisma.document.findMany({
       orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        title: true,
+        createdAt: true,
+        updatedAt: true,
+        folderId: true,
+      },
     });
     res.json(documents);
   } catch (error: any) {
@@ -173,6 +180,25 @@ app.get("/api/documents/:id", async (req: Request, res: Response) => {
     res.json(doc);
   } catch (error: any) {
     console.error("Error fetching document:", error);
+    // #region agent log
+    fetch("http://127.0.0.1:7243/ingest/e7e07eac-9415-495e-a623-d26d2f751fe5", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "a2aff8" },
+      body: JSON.stringify({
+        sessionId: "a2aff8",
+        hypothesisId: "H1",
+        location: "server/index.ts:GET /api/documents/:id",
+        message: "document findUnique failed",
+        data: {
+          code: error?.code,
+          name: error?.name,
+          message: String(error?.message ?? error),
+          meta: error?.meta,
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
     res.status(500).json({ error: "Failed to fetch document" });
   }
 });
@@ -180,11 +206,39 @@ app.get("/api/documents/:id", async (req: Request, res: Response) => {
 app.patch("/api/documents/:id", async (req: Request, res: Response) => {
   try {
     const id = String(req.params.id);
-    const { title, content, folderId } = req.body;
-    const data: { title?: string; content?: string; folderId?: string | null } = {};
+    const { title, content, folderId, monkeyTimeline } = req.body;
+    const data: {
+      title?: string;
+      content?: string;
+      folderId?: string | null;
+      monkeyTimeline?: object;
+    } = {};
     if (title !== undefined) data.title = String(title);
     if (content !== undefined) data.content = String(content);
     if (folderId !== undefined) data.folderId = folderId == null || folderId === "" ? null : String(folderId);
+    if (monkeyTimeline !== undefined) {
+      if (!Array.isArray(monkeyTimeline)) {
+        return res.status(400).json({ error: "monkeyTimeline must be an array" });
+      }
+      data.monkeyTimeline = monkeyTimeline;
+    }
+    // #region agent log
+    fetch("http://127.0.0.1:7243/ingest/e7e07eac-9415-495e-a623-d26d2f751fe5", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "a2aff8" },
+      body: JSON.stringify({
+        sessionId: "a2aff8",
+        hypothesisId: "H3",
+        location: "server/index.ts:PATCH /api/documents/:id pre-update",
+        message: "patch data shape",
+        data: {
+          updateKeys: Object.keys(data),
+          isEmpty: Object.keys(data).length === 0,
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
     const doc = await prisma.document.update({
       where: { id },
       data,
@@ -193,6 +247,39 @@ app.patch("/api/documents/:id", async (req: Request, res: Response) => {
   } catch (error: any) {
     if (error?.code === "P2025") return res.status(404).json({ error: "Document not found" });
     console.error("Error updating document:", error);
+    // #region agent log
+    fetch("http://127.0.0.1:7243/ingest/e7e07eac-9415-495e-a623-d26d2f751fe5", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "a2aff8" },
+      body: JSON.stringify({
+        sessionId: "a2aff8",
+        hypothesisId: "H2",
+        location: "server/index.ts:PATCH /api/documents/:id",
+        message: "document update failed",
+        data: {
+          code: error?.code,
+          name: error?.name,
+          message: String(error?.message ?? error),
+          meta: error?.meta,
+          patchKeys: Object.keys(req.body ?? {}),
+          dataKeysSent: (() => {
+            try {
+              const d = req.body;
+              const keys: string[] = [];
+              if (d?.title !== undefined) keys.push("title");
+              if (d?.content !== undefined) keys.push("content");
+              if (d?.folderId !== undefined) keys.push("folderId");
+              if (d?.monkeyTimeline !== undefined) keys.push("monkeyTimeline");
+              return keys;
+            } catch {
+              return [];
+            }
+          })(),
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
     res.status(500).json({ error: "Failed to update document" });
   }
 });
