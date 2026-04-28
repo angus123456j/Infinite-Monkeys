@@ -1,5 +1,5 @@
 /**
- * Local writing analysis helpers (readability, sentence shape, rough style signals).
+ * Local writing analysis helpers (sentence shape, rough style signals).
  * Pure functions — safe for agents and UI to share.
  */
 
@@ -60,68 +60,12 @@ export function wordCount(sentence: string): number {
   return parts.length;
 }
 
-/** Rough syllable count for English words (good enough for aggregate readability). */
-export function countSyllables(word: string): number {
-  let w = word.toLowerCase().replace(/[^a-z']/g, "");
-  if (w.length === 0) return 0;
-  if (w.length <= 3) return 1;
-
-  w = w.replace(/(?:[^laeiouy]es|ed|[^laeiouy]e)$/, "").replace(/^y/, "");
-
-  const matches = w.match(/[aeiouy]{1,2}/g);
-  return Math.max(1, matches ? matches.length : 1);
-}
-
 function totalWords(text: string): string[] {
   return text
     .trim()
     .split(/\s+/)
     .map((w) => w.replace(/^[^\w'-]+|[^\w'-]+$/g, ""))
     .filter((w) => w.length > 0);
-}
-
-function totalSyllablesInText(text: string): number {
-  const words = totalWords(text);
-  let n = 0;
-  for (const w of words) {
-    n += countSyllables(w);
-  }
-  return n;
-}
-
-/**
- * Flesch–Kincaid grade level (approximate).
- * grade = 0.39 * (words/sentences) + 11.8 * (syllables/words) - 15.59
- */
-export function getReadabilityScore(text: string): number {
-  const sentences = getSentenceList(text);
-  const words = totalWords(text);
-  if (words.length === 0 || sentences.length === 0) return NaN;
-
-  const w = words.length;
-  const s = sentences.length;
-  const syllables = totalSyllablesInText(text);
-
-  const grade = 0.39 * (w / s) + 11.8 * (syllables / w) - 15.59;
-  return Math.round(Math.max(0, Math.min(20, grade)) * 10) / 10;
-}
-
-/** Word count strictly greater than 14 (i.e. 15+ words). */
-export function countHardSentences(text: string): number {
-  return getSentenceList(text).filter((sent) => wordCount(sent) > 14).length;
-}
-
-/** Word count strictly greater than 24 (i.e. 25+ words). */
-export function countVeryHardSentences(text: string): number {
-  return getSentenceList(text).filter((sent) => wordCount(sent) > 24).length;
-}
-
-/**
- * Sentences longer than `minWords` words (default: 30).
- * Distinct from "very hard" so you can tune thresholds later.
- */
-export function countLongSentences(text: string, minWords = 30): number {
-  return getSentenceList(text).filter((sent) => wordCount(sent) > minWords).length;
 }
 
 const BE_VERB =
@@ -235,10 +179,6 @@ export function findQualifierMatches(text: string): TextMatch[] {
 }
 
 export interface WritingMetrics {
-  readabilityGrade: number;
-  hardSentences: number;
-  veryHardSentences: number;
-  longSentences: number;
   passiveVoice: number;
   adverbs: number;
   qualifiers: number;
@@ -250,28 +190,11 @@ export interface WritingMetrics {
 export function computeWritingMetrics(text: string): WritingMetrics {
   const sentences = getSentenceList(text);
   const words = totalWords(text);
-  const wc = words.length;
-  let hard = 0;
-  let veryHard = 0;
-  let long = 0;
-  for (const sent of sentences) {
-    const wcSent = wordCount(sent);
-    if (wcSent > 14) hard += 1;
-    if (wcSent > 24) veryHard += 1;
-    if (wcSent > 30) long += 1; /* configurable “long” band; distinct from very hard */
-  }
-
-  const readabilityGrade = getReadabilityScore(text);
-
   return {
-    readabilityGrade,
-    hardSentences: hard,
-    veryHardSentences: veryHard,
-    longSentences: long,
     passiveVoice: countPassiveVoice(text),
     adverbs: countAdverbs(text),
     qualifiers: countQualifiers(text),
     sentenceCount: sentences.length,
-    wordCount: wc,
+    wordCount: words.length,
   };
 }

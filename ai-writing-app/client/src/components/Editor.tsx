@@ -20,7 +20,19 @@ import {
   setWritingAnalysisDecorations,
 } from "../extensions/WritingAnalysisHighlight";
 import { ScrutinyHighlight, setScrutinyDecorations } from "../extensions/ScrutinyHighlight";
-import { buildWritingHighlightDecorations } from "../utils/writingHighlightDecorations";
+import {
+  OrchestratorSelectionHighlight,
+  setOrchestratorSelectionDecorations,
+} from "../extensions/OrchestratorSelectionHighlight";
+import {
+  buildWritingHighlightDecorations,
+  buildTextCharMap,
+  charRangeToDocRange,
+} from "../utils/writingHighlightDecorations";
+import {
+  analyzeGrammarSentences,
+  type GrammarSentenceCard,
+} from "../lib/harperGrammar";
 import Toolbar from "./Toolbar";
 import WritingPulsePanel from "./WritingPulsePanel";
 import ScrutinyPanel from "./ScrutinyPanel.tsx";
@@ -30,6 +42,7 @@ import AgentInvocationTimeline, {
 } from "./AgentInvocationTimeline";
 import { joinForward } from "@tiptap/pm/commands";
 import type { EditorView } from "@tiptap/pm/view";
+import { Decoration } from "@tiptap/pm/view";
 import { getAgent, listAgents, type AgentMeta } from "../lib/agents";
 import { listContexts } from "../lib/contexts";
 import { saveDoc } from "../lib/docs";
@@ -39,6 +52,9 @@ import {
   extraSpacerParagraphsNeeded,
   maxOverlapRepairExtraParas,
 } from "../lib/pretextRewriteLayout";
+import { SuggestionBlock } from "../extensions/SuggestionBlock";
+
+const USE_INFLOW_SUGGESTIONS = true;
 
 /** Fixed 50 lines per page. Line height in px (11pt × 1.15 ≈ 17). */
 const LINES_PER_PAGE = 50;
@@ -63,6 +79,7 @@ const LS_WRITING_PULSE_EXPANDED = "im-writing-pulse-expanded";
 const LS_TIMELINE_VISIBLE = "im-editor-timeline-visible";
 const LS_SCRUTINY_EXPANDED = "im-scrutiny-expanded";
 const HIGHLIGHT_DEBOUNCE_MS = 200;
+const LOCAL_GRAMMAR_DEBOUNCE_MS = 350;
 
 function readStoredSidebarVisible(key: string, defaultVisible: boolean): boolean {
   try {
@@ -323,6 +340,17 @@ interface EditorProps {
   docId?: string;
   /** When set, monkey timeline is loaded/saved for this document (not used on context-only pages). */
   timelineDocumentId?: string;
+  /** Persist monkey timeline for the current entity (document or context). */
+  onSaveMonkeyTimeline?: (entries: AgentInvocationLogEntry[]) => void;
+  /**
+   * When true (e.g. brand-new empty document), all side rails + timeline start collapsed
+   * instead of restoring the last localStorage layout.
+   */
+  collapseSidePanelsOnMount?: boolean;
+  /** Trial mode: used to gate premium features and onboarding. */
+  trialMode?: boolean;
+  onTrialConsume?: (action: "rewrite" | "scrutiny-selection" | "scrutiny-document") => boolean;
+  onTrialGated?: (action: "rewrite" | "scrutiny-selection" | "scrutiny-document") => void;
   initialContent?: string;
   initialMonkeyTimeline?: AgentInvocationLogEntry[];
   onSaveContent?: (content: string) => void;
@@ -332,11 +360,38 @@ interface EditorProps {
 function Editor({
   docId,
   timelineDocumentId,
+  onSaveMonkeyTimeline,
+  collapseSidePanelsOnMount = false,
+  trialMode = false,
+  onTrialConsume,
+  onTrialGated,
   initialContent = "<p></p>",
   initialMonkeyTimeline = [],
   onSaveContent,
   onEditorReady,
 }: EditorProps) {
+  const [tourStepId, setTourStepId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!trialMode) return;
+    const onStep = (e: Event) => {
+      const ce = e as CustomEvent;
+      const id = (ce?.detail as any)?.stepId;
+      setTourStepId(typeof id === "string" ? id : null);
+    };
+    window.addEventListener("im:tour-step", onStep as EventListener);
+    return () => window.removeEventListener("im:tour-step", onStep as EventListener);
+  }, [trialMode]);
+
+  // In trial onboarding, make sure the Editor panel isn't auto-opened.
+  useEffect(() => {
+    if (!trialMode) return;
+    if (tourStepId === "editor-tab") {
+      setWritingPulseExpanded(false);
+    }
+  }, [trialMode, tourStepId]);
+  const acceptSuggestionRef = useRef<(rewriteId: number) => void>(() => {});
+  const rejectSuggestionRef = useRef<(rewriteId: number) => void>(() => {});
+
   const editor = useEditor({
     extensions: [
       StarterKit,
@@ -346,7 +401,12 @@ function Editor({
       FontFamily,
       FontSize,
       WritingAnalysisHighlight,
+      OrchestratorSelectionHighlight,
       ScrutinyHighlight,
+      SuggestionBlock.configure({
+        onAccept: (rewriteId: number) => acceptSuggestionRef.current(rewriteId),
+        onReject: (rewriteId: number) => rejectSuggestionRef.current(rewriteId),
+      }),
     ],
     content: initialContent,
     autofocus: true,
@@ -371,17 +431,34 @@ function Editor({
   const [orchestratorError, setOrchestratorError] = useState<string | null>(null);
 
   const [orchestratorSectionExpanded, setOrchestratorSectionExpanded] = useState(
-    () => readStoredSidebarVisible(LS_ORCHESTRATOR_EXPANDED, true)
+    () =>
+      collapseSidePanelsOnMount
+        ? false
+        : readStoredSidebarVisible(LS_ORCHESTRATOR_EXPANDED, true)
   );
+  /** Bumps when the document selection changes so Orchestrator UI stays in sync (TipTap does not re-render React on selection alone). */
+  const [orchestratorSelVersion, setOrchestratorSelVersion] = useState(0);
   const [writingPulseExpanded, setWritingPulseExpanded] = useState(() =>
-    readStoredSidebarVisible(LS_WRITING_PULSE_EXPANDED, true)
+    collapseSidePanelsOnMount
+      ? false
+      : readStoredSidebarVisible(LS_WRITING_PULSE_EXPANDED, true)
   );
   const [scrutinyExpanded, setScrutinyExpanded] = useState(() =>
-    readStoredSidebarVisible(LS_SCRUTINY_EXPANDED, true)
+    collapseSidePanelsOnMount
+      ? false
+      : readStoredSidebarVisible(LS_SCRUTINY_EXPANDED, true)
   );
   const [showMonkeyTimeline, setShowMonkeyTimeline] = useState(() =>
-    readStoredSidebarVisible(LS_TIMELINE_VISIBLE, true)
+    collapseSidePanelsOnMount
+      ? false
+      : readStoredSidebarVisible(LS_TIMELINE_VISIBLE, true)
   );
+  const [grammarCards, setGrammarCards] = useState<GrammarSentenceCard[]>([]);
+  const [selectedGrammarId, setSelectedGrammarId] = useState<string | null>(null);
+  const grammarCardsRef = useRef<GrammarSentenceCard[]>([]);
+  const selectedGrammarIdRef = useRef<string | null>(null);
+  grammarCardsRef.current = grammarCards;
+  selectedGrammarIdRef.current = selectedGrammarId;
 
   useEffect(() => {
     try {
@@ -485,40 +562,130 @@ function Editor({
     };
   }, [orchestratorSectionExpanded, writingPulseExpanded, scrutinyExpanded]);
 
-  /** Live in-document writing highlights (local analysis; debounced). */
+  const applyWritingPulseDecorations = useCallback(() => {
+    if (!editor || !writingPulseExpanded) return;
+    const selId = selectedGrammarIdRef.current;
+    const cards = grammarCardsRef.current;
+    const sel = selId ? cards.find((c) => c.id === selId) : undefined;
+    const ranges = sel ? [{ start: sel.startChar, end: sel.endChar }] : [];
+    setWritingAnalysisDecorations(
+      editor,
+      buildWritingHighlightDecorations(editor, ranges)
+    );
+  }, [editor, writingPulseExpanded]);
+
+  const handleSelectGrammarCard = useCallback(
+    (id: string | null) => {
+      setSelectedGrammarId(id);
+      if (!editor || !id) return;
+      const card = grammarCardsRef.current.find((c) => c.id === id);
+      if (!card) return;
+      const map = buildTextCharMap(editor);
+      if (!map) return;
+      const range = charRangeToDocRange(map, card.startChar, card.endChar);
+      if (!range) return;
+      editor
+        .chain()
+        .focus()
+        .setTextSelection({ from: range.from, to: range.to })
+        .scrollIntoView()
+        .run();
+    },
+    [editor]
+  );
+
+  const handleAcceptGrammarSuggestion = useCallback(
+    (id: string) => {
+      if (!editor) return;
+      const card = grammarCardsRef.current.find((c) => c.id === id);
+      if (!card) return;
+      const map = buildTextCharMap(editor);
+      if (!map) return;
+      const range = charRangeToDocRange(map, card.startChar, card.endChar);
+      if (!range) return;
+      editor
+        .chain()
+        .focus()
+        .deleteRange({ from: range.from, to: range.to })
+        .insertContentAt(range.from, card.suggested)
+        .run();
+      setSelectedGrammarId(null);
+    },
+    [editor]
+  );
+
+  /** Harper (WASM) grammar list + weakeners; only the selected sentence is tinted. */
   useEffect(() => {
     if (!editor) return;
 
-    // When the Writing Pulse panel is collapsed, disable and clear highlights so
-    // the editor behaves like the feature is "off" while minimized.
     if (!writingPulseExpanded) {
+      setGrammarCards([]);
+      setSelectedGrammarId(null);
       setWritingAnalysisDecorations(editor, []);
       return;
     }
 
-    const apply = () => {
-      const decos = buildWritingHighlightDecorations(editor);
-      setWritingAnalysisDecorations(editor, decos);
+    let fastTimer: ReturnType<typeof setTimeout> | null = null;
+    let slowTimer: ReturnType<typeof setTimeout> | null = null;
+    let harperGeneration = 0;
+
+    const runFast = () => {
+      applyWritingPulseDecorations();
     };
 
-    apply();
+    const runHarperAsync = () => {
+      harperGeneration += 1;
+      const gen = harperGeneration;
+      void (async () => {
+        const text = editor.getText();
+        let cards: GrammarSentenceCard[] = [];
+        try {
+          cards = await analyzeGrammarSentences(text);
+        } catch (e) {
+          if (typeof console !== "undefined" && console.warn) {
+            console.warn("[grammar] Harper lint failed:", e);
+          }
+        }
+        if (gen !== harperGeneration) return;
+        grammarCardsRef.current = cards;
+        const prevSel = selectedGrammarIdRef.current;
+        const nextSel =
+          !prevSel || cards.some((c) => c.id === prevSel) ? prevSel : null;
+        selectedGrammarIdRef.current = nextSel;
+        setGrammarCards(cards);
+        setSelectedGrammarId(nextSel);
+        applyWritingPulseDecorations();
+      })();
+    };
 
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     const schedule = () => {
-      if (timeoutId !== null) clearTimeout(timeoutId);
-      timeoutId = setTimeout(() => {
-        apply();
-        timeoutId = null;
+      if (fastTimer !== null) clearTimeout(fastTimer);
+      fastTimer = setTimeout(() => {
+        fastTimer = null;
+        runFast();
       }, HIGHLIGHT_DEBOUNCE_MS);
+      if (slowTimer !== null) clearTimeout(slowTimer);
+      slowTimer = setTimeout(() => {
+        slowTimer = null;
+        runHarperAsync();
+      }, LOCAL_GRAMMAR_DEBOUNCE_MS);
     };
 
+    runHarperAsync();
     editor.on("update", schedule);
     return () => {
       editor.off("update", schedule);
-      if (timeoutId !== null) clearTimeout(timeoutId);
+      if (fastTimer !== null) clearTimeout(fastTimer);
+      if (slowTimer !== null) clearTimeout(slowTimer);
+      harperGeneration += 1;
       setWritingAnalysisDecorations(editor, []);
     };
-  }, [editor, writingPulseExpanded]);
+  }, [editor, writingPulseExpanded, applyWritingPulseDecorations]);
+
+  useEffect(() => {
+    if (!editor || !writingPulseExpanded) return;
+    applyWritingPulseDecorations();
+  }, [selectedGrammarId, editor, writingPulseExpanded, applyWritingPulseDecorations]);
 
   // Clear AI scrutiny highlights while the panel is collapsed.
   useEffect(() => {
@@ -553,6 +720,54 @@ function Editor({
     editor.state.selection &&
     editor.state.selection.from !== editor.state.selection.to;
 
+  const orchestratorTargetSnippet = useMemo(() => {
+    if (!editor || !orchestratorSectionExpanded) return "";
+    const { from, to } = editor.state.selection;
+    if (from === to) return "";
+    const raw = editor.state.doc
+      .textBetween(from, to, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!raw) return "";
+    const max = 380;
+    return raw.length > max ? `${raw.slice(0, max)}…` : raw;
+  }, [editor, orchestratorSectionExpanded, orchestratorSelVersion, contentVersion]);
+
+  useEffect(() => {
+    if (!editor || !orchestratorSectionExpanded) return;
+    const bump = () => setOrchestratorSelVersion((n) => n + 1);
+    editor.on("selectionUpdate", bump);
+    return () => {
+      editor.off("selectionUpdate", bump);
+    };
+  }, [editor, orchestratorSectionExpanded]);
+
+  useEffect(() => {
+    if (!editor) return;
+    if (!orchestratorSectionExpanded) {
+      setOrchestratorSelectionDecorations(editor, []);
+      return;
+    }
+    const sync = () => {
+      const { from, to } = editor.state.selection;
+      if (from === to) {
+        setOrchestratorSelectionDecorations(editor, []);
+      } else {
+        setOrchestratorSelectionDecorations(editor, [
+          Decoration.inline(from, to, { class: "orchestrator-target-range" }),
+        ]);
+      }
+    };
+    sync();
+    editor.on("selectionUpdate", sync);
+    editor.on("update", sync);
+    return () => {
+      editor.off("selectionUpdate", sync);
+      editor.off("update", sync);
+      setOrchestratorSelectionDecorations(editor, []);
+    };
+  }, [editor, orchestratorSectionExpanded]);
+
   useEffect(() => {
     if (editor && onEditorReady) onEditorReady(editor);
   }, [editor, onEditorReady]);
@@ -584,23 +799,31 @@ function Editor({
 
   const timelineSaveSkippedRef = useRef(true);
   useEffect(() => {
-    if (!timelineDocumentId) return;
+    if (!timelineDocumentId && !onSaveMonkeyTimeline) return;
     if (timelineSaveSkippedRef.current) {
       timelineSaveSkippedRef.current = false;
       return;
     }
     const t = window.setTimeout(() => {
-      void saveDoc(timelineDocumentId, { monkeyTimeline: invocationLogRef.current });
+      if (onSaveMonkeyTimeline) {
+        onSaveMonkeyTimeline(invocationLogRef.current);
+      } else if (timelineDocumentId) {
+        void saveDoc(timelineDocumentId, { monkeyTimeline: invocationLogRef.current });
+      }
     }, TIMELINE_SAVE_DEBOUNCE_MS);
     return () => clearTimeout(t);
-  }, [invocationLog, timelineDocumentId]);
+  }, [invocationLog, timelineDocumentId, onSaveMonkeyTimeline]);
 
   useEffect(() => {
-    if (!timelineDocumentId) return;
+    if (!timelineDocumentId && !onSaveMonkeyTimeline) return;
     const flush = () => {
-      void saveDoc(timelineDocumentId, {
-        monkeyTimeline: invocationLogRef.current,
-      });
+      if (onSaveMonkeyTimeline) {
+        onSaveMonkeyTimeline(invocationLogRef.current);
+      } else if (timelineDocumentId) {
+        void saveDoc(timelineDocumentId, {
+          monkeyTimeline: invocationLogRef.current,
+        });
+      }
     };
     const onVisibilityChange = () => {
       if (document.visibilityState === "hidden") flush();
@@ -614,7 +837,7 @@ function Editor({
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("beforeunload", onBeforeUnload);
     };
-  }, [timelineDocumentId]);
+  }, [timelineDocumentId, onSaveMonkeyTimeline]);
 
   // Multiple inline suggestions state
   const [pendingRewrites, setPendingRewrites] = useState<PendingRewrite[]>([]);
@@ -637,14 +860,16 @@ function Editor({
     pendingRewritesRef.current = pendingRewrites;
   }, [pendingRewrites]);
 
-  /** When reveal ends, Accept/Reject mount — remeasure after paint (ResizeObserver can lag one frame). */
-  const rewritePhaseSig = useMemo(
+  /** When the card is changing size (loading/reveal/streaming), nudge overlap repair immediately. */
+  const rewriteGrowthSig = useMemo(
     () =>
       pendingRewrites
         .filter((rw) => rw.parentId == null)
         .map(
           (rw) =>
-            `${rw.id}:${rw.isRevealing ? 1 : 0}:${rw.isLoading ? 1 : 0}`
+            `${rw.id}:${rw.isRevealing ? 1 : 0}:${rw.isLoading ? 1 : 0}:${
+              (rw.rewriteText ?? rw.originalText ?? "").length
+            }`
         )
         .join("|"),
     [pendingRewrites]
@@ -836,6 +1061,10 @@ function Editor({
 
   // Compute suggestion positions for ALL pending rewrites
   useEffect(() => {
+    if (USE_INFLOW_SUGGESTIONS) {
+      setSuggestionPositions({});
+      return;
+    }
     if (!editor || pendingRewrites.length === 0 || !pageRef.current) {
       setSuggestionPositions({});
       return;
@@ -873,6 +1102,10 @@ function Editor({
 
   // Measure actual suggestion element height and adjust spacers to prevent overlap
   useEffect(() => {
+    if (USE_INFLOW_SUGGESTIONS) {
+      adjustRewriteOverlapSpacersRef.current = () => {};
+      return;
+    }
     if (!editor || pendingRewrites.length === 0) {
       adjustRewriteOverlapSpacersRef.current = () => {};
       return;
@@ -897,18 +1130,18 @@ function Editor({
           "";
         const MAX_EXTRA_PARAS = maxOverlapRepairExtraParas(rewriteForMeasure);
         /** Conservative: assume each new empty `<p>` adds ~this much flow height after min-height CSS. */
-        const pixelsPerPara = 13;
+        const pixelsPerPara = LINE_HEIGHT_PX;
 
         /** Pixels of clearance required between card bottom and top of following doc content. */
-        const CARD_CLEARANCE_PX = 28;
+        const CARD_CLEARANCE_PX = 44;
         /** Extra slack: measured spacer strip should be at least card height + this. */
-        const STRIP_VS_CARD_BUFFER_PX = 56;
+        const STRIP_VS_CARD_BUFFER_PX = 92;
         /**
          * Tie minimum spacer *count* to measured card height (includes Accept/Reject).
          * Converts a shortfall into px so overlap repair inserts enough rows even if coords lag.
          */
-        const CARD_PARA_SLOT_PX = 11;
-        const CARD_PARA_EXTRA_RESERVE_PX = 88;
+        const CARD_PARA_SLOT_PX = LINE_HEIGHT_PX;
+        const CARD_PARA_EXTRA_RESERVE_PX = 136;
 
         let rwSpacersChanged = false;
         for (let round = 0; round < 22; round++) {
@@ -1059,11 +1292,15 @@ function Editor({
     requestAnimationFrame(() => {
       adjustRewriteOverlapSpacersRef.current();
       requestAnimationFrame(() => adjustRewriteOverlapSpacersRef.current());
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => adjustRewriteOverlapSpacersRef.current())
+      );
     });
-  }, [editor, rewritePhaseSig]);
+  }, [editor, rewriteGrowthSig]);
 
   // Enter: move the caret from the rewritten passage / spacer strip to the doc below the card
   useEffect(() => {
+    if (USE_INFLOW_SUGGESTIONS) return;
     if (!editor) return;
     const dom = editor.view.dom;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -1120,6 +1357,50 @@ function Editor({
     return () => dom.removeEventListener("keydown", onKeyDown, true);
   }, [editor]);
 
+  // Safety: if the caret ends up visually under a growing rewrite card, jump it to the end of the spacer strip.
+  useEffect(() => {
+    if (USE_INFLOW_SUGGESTIONS) return;
+    if (!editor || pendingRewrites.length === 0) return;
+    const lastNudgeAtRef = { current: 0 };
+    const nudge = () => {
+      if (!editor.isFocused || editor.isDestroyed) return;
+      const head = editor.state.selection.$head.pos;
+      const now = performance.now();
+      if (now - lastNudgeAtRef.current < 80) return;
+
+      for (const rw of pendingRewritesRef.current) {
+        if (rw.parentId != null) continue;
+        const cardEl = suggestionElRefs.current[rw.id];
+        if (!cardEl) continue;
+        try {
+          const cardRect = cardEl.getBoundingClientRect();
+          const caretTop = editor.view.coordsAtPos(head).top;
+          if (caretTop < cardRect.bottom - 2) {
+            lastNudgeAtRef.current = now;
+            adjustRewriteOverlapSpacersRef.current();
+            requestAnimationFrame(() => {
+              if (editor.isDestroyed) return;
+              const latest = pendingRewritesRef.current.find((r) => r.id === rw.id);
+              if (!latest) return;
+              const docSize = editor.state.doc.content.size;
+              const target = Math.min(Math.max(1, latest.spacerTo), docSize);
+              editor.chain().focus().setTextSelection(target).scrollIntoView().run();
+              requestAnimationFrame(() => adjustRewriteOverlapSpacersRef.current());
+            });
+            return;
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+
+    editor.on("selectionUpdate", nudge);
+    return () => {
+      editor.off("selectionUpdate", nudge);
+    };
+  }, [editor, pendingRewrites.length]);
+
   // Word-by-word reveal animation — pre-allocates spacers for full text first
   useEffect(() => {
     for (const rw of pendingRewrites) {
@@ -1128,44 +1409,53 @@ function Editor({
         rw.isRevealing &&
         !(rw.id in revealTimersRef.current)
       ) {
-        // Pre-allocate spacers for the FULL text before starting reveal so
-        // content below is pushed down before words start appearing, but keep
-        // the baseline modest so short rewrites (e.g. synonyms) don't create a
-        // huge empty gap.
-        if (editor) {
-          const currentRef = pendingRewritesRef.current.find(
-            (r) => r.id === rw.id
-          );
-          if (currentRef && currentRef.parentId == null) {
-            const currentSpacers =
-              (currentRef.spacerTo - currentRef.spacerFrom) / 2;
-            const extraNeeded = extraSpacerParagraphsNeeded(
-              rw.rewriteText,
-              currentSpacers
+        if (USE_INFLOW_SUGGESTIONS) {
+          // Ensure the node starts empty before revealing.
+          editor?.commands.updateSuggestionBlock(rw.id, {
+            status: "ready",
+            text: "",
+            error: null,
+          });
+        } else {
+          // Pre-allocate spacers for the FULL text before starting reveal so
+          // content below is pushed down before words start appearing, but keep
+          // the baseline modest so short rewrites (e.g. synonyms) don't create a
+          // huge empty gap.
+          if (editor) {
+            const currentRef = pendingRewritesRef.current.find(
+              (r) => r.id === rw.id
             );
-
-            if (extraNeeded > 0) {
-              editor
-                .chain()
-                .command(({ tr, state }) => {
-                  let pos = currentRef.spacerTo;
-                  const paragraphType = state.schema.nodes["paragraph"];
-                  if (!paragraphType) return false;
-                  for (let i = 0; i < extraNeeded; i++) {
-                    const para = paragraphType.create();
-                    tr.insert(pos, para);
-                    pos += 2;
-                  }
-                  return true;
-                })
-                .run();
-
-              const newSpacerTo = currentRef.spacerTo + extraNeeded * 2;
-              const updated = pendingRewritesRef.current.map((r) =>
-                r.id === rw.id ? { ...r, spacerTo: newSpacerTo } : r
+            if (currentRef && currentRef.parentId == null) {
+              const currentSpacers =
+                (currentRef.spacerTo - currentRef.spacerFrom) / 2;
+              const extraNeeded = extraSpacerParagraphsNeeded(
+                rw.rewriteText,
+                currentSpacers
               );
-              pendingRewritesRef.current = updated;
-              setPendingRewrites(updated);
+
+              if (extraNeeded > 0) {
+                editor
+                  .chain()
+                  .command(({ tr, state }) => {
+                    let pos = currentRef.spacerTo;
+                    const paragraphType = state.schema.nodes["paragraph"];
+                    if (!paragraphType) return false;
+                    for (let i = 0; i < extraNeeded; i++) {
+                      const para = paragraphType.create();
+                      tr.insert(pos, para);
+                      pos += 2;
+                    }
+                    return true;
+                  })
+                  .run();
+
+                const newSpacerTo = currentRef.spacerTo + extraNeeded * 2;
+                const updated = pendingRewritesRef.current.map((r) =>
+                  r.id === rw.id ? { ...r, spacerTo: newSpacerTo } : r
+                );
+                pendingRewritesRef.current = updated;
+                setPendingRewrites(updated);
+              }
             }
           }
         }
@@ -1175,16 +1465,27 @@ function Editor({
 
         const timer = window.setInterval(() => {
           wordIndex++;
-          const contentEl = revealContentRefs.current[rw.id];
-          if (contentEl) {
-            contentEl.innerText = words.slice(0, wordIndex).join(" ");
+          const partial = words.slice(0, wordIndex).join(" ");
+          if (USE_INFLOW_SUGGESTIONS) {
+            editor?.commands.updateSuggestionBlock(rw.id, {
+              status: "ready",
+              text: partial,
+              error: null,
+            });
+          } else {
+            const contentEl = revealContentRefs.current[rw.id];
+            if (contentEl) {
+              contentEl.innerText = partial;
+            }
+            requestAnimationFrame(() => adjustRewriteOverlapSpacersRef.current());
           }
-          requestAnimationFrame(() => adjustRewriteOverlapSpacersRef.current());
 
           if (wordIndex >= words.length) {
             clearInterval(timer);
             delete revealTimersRef.current[rw.id];
-            requestAnimationFrame(() => adjustRewriteOverlapSpacersRef.current());
+            if (!USE_INFLOW_SUGGESTIONS) {
+              requestAnimationFrame(() => adjustRewriteOverlapSpacersRef.current());
+            }
             setPendingRewrites((prev) =>
               prev.map((r) =>
                 r.id === rw.id ? { ...r, isRevealing: false } : r
@@ -1529,29 +1830,56 @@ function Editor({
       const sentenceForSynonym = extractSentenceContext(doc, sel.from, sel.to) ?? "";
       const spacerInsertPos = computeSpacerInsertPos(doc, sel.to);
 
-      editor!
-        .chain()
-        .focus()
-        .setTextSelection({ from: sel.from, to: sel.to })
-        .setHighlight({ color: HIGHLIGHT_COLOR })
-        .command(({ tr, state }) => {
-          const paragraphType = state.schema.nodes["paragraph"];
-          if (!paragraphType) return false;
-          let pos = spacerInsertPos;
-          for (let i = 0; i < INITIAL_SPACER_COUNT; i++) {
-            tr.insert(pos, paragraphType.create());
-            pos += 2;
-          }
-          return true;
-        })
-        .setTextSelection(
-          docPosAfterSpacerParagraphs(spacerInsertPos, INITIAL_SPACER_COUNT)
-        )
-        .scrollIntoView()
-        .run();
+      if (USE_INFLOW_SUGGESTIONS) {
+        // Insert an in-flow suggestion block so document layout pushes content down naturally.
+        editor!
+          .chain()
+          .focus()
+          .setTextSelection({ from: sel.from, to: sel.to })
+          .setHighlight({ color: HIGHLIGHT_COLOR })
+          .insertSuggestionBlock(
+            {
+              rewriteId: nextRewriteId,
+              monkeyId: "", // filled after id is allocated below
+              status: "loading",
+              title: "Rewritten:",
+              text: "",
+              error: null,
+            },
+            spacerInsertPos
+          )
+          .setTextSelection(spacerInsertPos + 2)
+          .scrollIntoView()
+          .run();
+      } else {
+        editor!
+          .chain()
+          .focus()
+          .setTextSelection({ from: sel.from, to: sel.to })
+          .setHighlight({ color: HIGHLIGHT_COLOR })
+          .command(({ tr, state }) => {
+            const paragraphType = state.schema.nodes["paragraph"];
+            if (!paragraphType) return false;
+            let pos = spacerInsertPos;
+            for (let i = 0; i < INITIAL_SPACER_COUNT; i++) {
+              tr.insert(pos, paragraphType.create());
+              pos += 2;
+            }
+            return true;
+          })
+          .setTextSelection(
+            docPosAfterSpacerParagraphs(spacerInsertPos, INITIAL_SPACER_COUNT)
+          )
+          .scrollIntoView()
+          .run();
+      }
 
       const id = nextRewriteId++;
       const monkeyId = randomMonkeyId();
+
+      if (USE_INFLOW_SUGGESTIONS && editor) {
+        editor.commands.updateSuggestionBlock(id, { monkeyId, rewriteId: id });
+      }
       const pending: PendingRewrite = {
         id,
         orchestratorMode: mode,
@@ -1565,7 +1893,7 @@ function Editor({
         isRevealing: false,
         error: null,
         spacerFrom: spacerInsertPos,
-        spacerTo: spacerInsertPos + INITIAL_SPACER_COUNT * 2,
+        spacerTo: spacerInsertPos,
       };
       pendingRewritesRef.current = [...pendingRewritesRef.current, pending];
       setPendingRewrites((prev) => [...prev, pending]);
@@ -1679,7 +2007,15 @@ function Editor({
           ];
         }
 
-        insertPretextRevealSpacers(id, finalText);
+        if (!USE_INFLOW_SUGGESTIONS) {
+          insertPretextRevealSpacers(id, finalText);
+        } else if (editor) {
+          editor.commands.updateSuggestionBlock(id, {
+            status: "ready",
+            text: "",
+            error: null,
+          });
+        }
         const latest = pendingRewritesRef.current.find((r) => r.id === id)!;
         const sentenceAttribution =
           mode === "sequential"
@@ -1716,6 +2052,12 @@ function Editor({
         );
       } catch (err: any) {
         const msg = err?.message ?? "Failed to execute orchestrator chain";
+        if (USE_INFLOW_SUGGESTIONS && editor) {
+          editor.commands.updateSuggestionBlock(id, {
+            status: "error",
+            error: msg,
+          });
+        }
         setPendingRewrites((prev) =>
           prev.map((rw) =>
             rw.id === id ? { ...rw, error: msg, isLoading: false } : rw
@@ -1756,6 +2098,13 @@ function Editor({
   // Handle overlay submit — doc selection (highlight + spacers) or nested selection inside a suggestion card
   const handleOverlaySubmit = useCallback(async () => {
     if (!storedSelection) return;
+    if (trialMode && onTrialConsume) {
+      const ok = onTrialConsume("rewrite");
+      if (!ok) {
+        onTrialGated?.("rewrite");
+        return;
+      }
+    }
     const currentAgentId = selectedAgentId;
     const currentContextIds = selectedContextIds;
     const trimmedPrompt = prompt.trim();
@@ -1907,34 +2256,97 @@ function Editor({
     // Insert spacers starting at a word boundary. If the selection ended in
     // the middle of a word, this moves the *whole* word below the suggestion.
     const spacerInsertPos = computeSpacerInsertPos(doc, sel.to);
+    // #region agent log
+    fetch('http://127.0.0.1:7243/ingest/e7e07eac-9415-495e-a623-d26d2f751fe5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7e6622'},body:JSON.stringify({sessionId:'7e6622',runId:'pre-fix',hypothesisId:'B1',location:'Editor.tsx:handleOverlaySubmit',message:'start_rewrite',data:{from:sel.from,to:sel.to,spacerInsertPos,isInflow:USE_INFLOW_SUGGESTIONS,selectedPreview:selectedText.slice(0,60)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion agent log
 
-    // Highlight text + insert spacer paragraphs in one transaction
-    editor
-      .chain()
-      .focus()
-      .setTextSelection({ from: sel.from, to: sel.to })
-      .setHighlight({ color: HIGHLIGHT_COLOR })
-      .command(({ tr, state }) => {
-        const paragraphType = state.schema.nodes["paragraph"];
-        if (!paragraphType) return false;
-        let pos = spacerInsertPos;
-        for (let i = 0; i < INITIAL_SPACER_COUNT; i++) {
-          const para = paragraphType.create();
-          tr.insert(pos, para);
-          pos += 2;
+    if (USE_INFLOW_SUGGESTIONS) {
+      const inflowId = nextRewriteId;
+      editor
+        .chain()
+        .focus()
+        .setTextSelection({ from: sel.from, to: sel.to })
+        .setHighlight({ color: HIGHLIGHT_COLOR })
+        .insertSuggestionBlock(
+          {
+            rewriteId: inflowId,
+            monkeyId: "",
+            status: "loading",
+            title: "Rewritten:",
+            text: "",
+            error: null,
+          },
+          spacerInsertPos
+        )
+        .scrollIntoView()
+        .run();
+      // #region agent log
+      requestAnimationFrame(() => {
+        try {
+          fetch('http://127.0.0.1:7243/ingest/e7e07eac-9415-495e-a623-d26d2f751fe5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7e6622'},body:JSON.stringify({sessionId:'7e6622',runId:'pre-fix',hypothesisId:'B2',location:'Editor.tsx:handleOverlaySubmit',message:'after_insert_node',data:{selFrom:editor.state.selection.from,selTo:editor.state.selection.to},timestamp:Date.now()})}).catch(()=>{});
+        } catch {}
+      });
+      // #endregion agent log
+
+      // Hard guarantee: move caret below the inserted suggestion block (in case PM keeps it above).
+      requestAnimationFrame(() => {
+        try {
+          let foundPos: number | null = null;
+          editor.state.doc.descendants((node, pos) => {
+            if (node.type?.name === "suggestionBlock" && (node.attrs as any)?.rewriteId === inflowId) {
+              foundPos = pos;
+              return false;
+            }
+            return true;
+          });
+          const n = foundPos != null ? editor.state.doc.nodeAt(foundPos) : null;
+          const after = foundPos != null && n ? Math.min(foundPos + n.nodeSize, editor.state.doc.content.size) : null;
+          // #region agent log
+          fetch('http://127.0.0.1:7243/ingest/e7e07eac-9415-495e-a623-d26d2f751fe5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7e6622'},body:JSON.stringify({sessionId:'7e6622',runId:'pre-fix',hypothesisId:'B3',location:'Editor.tsx:handleOverlaySubmit',message:'caret_move_attempt',data:{inflowId,foundPos,nodeSize:n?.nodeSize ?? null,after,selFromBefore:editor.state.selection.from,selToBefore:editor.state.selection.to},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion agent log
+          if (after != null) {
+            editor.chain().focus().setTextSelection(after).scrollIntoView().run();
+            // #region agent log
+            fetch('http://127.0.0.1:7243/ingest/e7e07eac-9415-495e-a623-d26d2f751fe5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7e6622'},body:JSON.stringify({sessionId:'7e6622',runId:'pre-fix',hypothesisId:'B4',location:'Editor.tsx:handleOverlaySubmit',message:'caret_move_done',data:{inflowId,after,selFromAfter:editor.state.selection.from,selToAfter:editor.state.selection.to},timestamp:Date.now()})}).catch(()=>{});
+            // #endregion agent log
+          }
+        } catch {
+          /* ignore */
         }
-        return true;
-      })
-      .setTextSelection(
-        docPosAfterSpacerParagraphs(spacerInsertPos, INITIAL_SPACER_COUNT)
-      )
-      .scrollIntoView()
-      .run();
+      });
+    } else {
+      // Highlight text + insert spacer paragraphs in one transaction
+      editor
+        .chain()
+        .focus()
+        .setTextSelection({ from: sel.from, to: sel.to })
+        .setHighlight({ color: HIGHLIGHT_COLOR })
+        .command(({ tr, state }) => {
+          const paragraphType = state.schema.nodes["paragraph"];
+          if (!paragraphType) return false;
+          let pos = spacerInsertPos;
+          for (let i = 0; i < INITIAL_SPACER_COUNT; i++) {
+            const para = paragraphType.create();
+            tr.insert(pos, para);
+            pos += 2;
+          }
+          return true;
+        })
+        .setTextSelection(
+          docPosAfterSpacerParagraphs(spacerInsertPos, INITIAL_SPACER_COUNT)
+        )
+        .scrollIntoView()
+        .run();
+    }
 
     // Create the pending rewrite entry
     const id = nextRewriteId++;
     const timelineLogId = nextInvocationId++;
     const monkeyId = randomMonkeyId();
+
+    if (USE_INFLOW_SUGGESTIONS && editor) {
+      editor.commands.updateSuggestionBlock(id, { monkeyId, rewriteId: id });
+    }
 
     const pending: PendingRewrite = {
       id,
@@ -1948,7 +2360,7 @@ function Editor({
       isRevealing: false,
       error: null,
       spacerFrom: spacerInsertPos,
-      spacerTo: spacerInsertPos + INITIAL_SPACER_COUNT * 2,
+      spacerTo: USE_INFLOW_SUGGESTIONS ? spacerInsertPos : spacerInsertPos + INITIAL_SPACER_COUNT * 2,
     };
 
     // Add to array
@@ -2011,7 +2423,15 @@ function Editor({
         currentContextIds,
         sentenceContext
       );
-      insertPretextRevealSpacers(id, result);
+      if (!USE_INFLOW_SUGGESTIONS) {
+        insertPretextRevealSpacers(id, result);
+      } else if (editor) {
+        editor.commands.updateSuggestionBlock(id, {
+          status: "ready",
+          text: "",
+          error: null,
+        });
+      }
       const latestRw = pendingRewritesRef.current.find((r) => r.id === id)!;
       setPendingRewrites((prev) =>
         prev.map((rw) =>
@@ -2046,6 +2466,12 @@ function Editor({
       );
     } catch (err: any) {
       const msg = err.message || "Failed to generate rewrite";
+      if (USE_INFLOW_SUGGESTIONS && editor) {
+        editor.commands.updateSuggestionBlock(id, {
+          status: "error",
+          error: msg,
+        });
+      }
       setPendingRewrites((prev) =>
         prev.map((rw) =>
           rw.id === id
@@ -2081,6 +2507,9 @@ function Editor({
     storedSelection,
     selectedAgentId,
     selectedContextIds,
+    trialMode,
+    onTrialConsume,
+    onTrialGated,
     fetchRewrite,
     llmProvider,
     insertPretextRevealSpacers,
@@ -2089,9 +2518,15 @@ function Editor({
   // Accept a specific inline suggestion — merge nested into parent, or apply root to document
   const handleSuggestionAccept = useCallback(
     (rewriteId: number) => {
+      // #region agent log
+      fetch('http://127.0.0.1:7243/ingest/e7e07eac-9415-495e-a623-d26d2f751fe5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7e6622'},body:JSON.stringify({sessionId:'7e6622',runId:'pre-fix',hypothesisId:'A1',location:'Editor.tsx:handleSuggestionAccept',message:'accept_called',data:{rewriteId,pendingCount:pendingRewritesRef.current.length,hasEditor:!!editor,isInflow:USE_INFLOW_SUGGESTIONS,selFrom:editor?.state.selection.from ?? null,selTo:editor?.state.selection.to ?? null,selType:(editor as any)?.state?.selection?.constructor?.name ?? null},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion agent log
       const current = pendingRewritesRef.current.find(
         (rw) => rw.id === rewriteId
       );
+      // #region agent log
+      fetch('http://127.0.0.1:7243/ingest/e7e07eac-9415-495e-a623-d26d2f751fe5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7e6622'},body:JSON.stringify({sessionId:'7e6622',runId:'pre-fix',hypothesisId:'A1',location:'Editor.tsx:handleSuggestionAccept',message:'accept_current',data:{found:!!current,parentId:current?.parentId ?? null,from:current?.from ?? null,to:current?.to ?? null,spacerFrom:current?.spacerFrom ?? null,spacerTo:current?.spacerTo ?? null,hasRewriteText:!!current?.rewriteText,rewriteLen:current?.rewriteText?.length ?? null},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion agent log
       if (!current?.rewriteText) return;
 
       if (current.parentId != null) {
@@ -2132,6 +2567,9 @@ function Editor({
 
       const { from, to, spacerFrom, spacerTo } = current;
       const rewriteText = current.rewriteText;
+      // #region agent log
+      fetch('http://127.0.0.1:7243/ingest/e7e07eac-9415-495e-a623-d26d2f751fe5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7e6622'},body:JSON.stringify({sessionId:'7e6622',runId:'pre-fix',hypothesisId:'A2',location:'Editor.tsx:handleSuggestionAccept',message:'accept_pre_replace',data:{rewriteId,from,to,selectedText:editor.state.doc.textBetween(from,to,' '),rewritePreview:rewriteText.slice(0,80)},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion agent log
 
       pendingRewritesRef.current = pendingRewritesRef.current.filter(
         (rw) => rw.id !== rewriteId
@@ -2152,9 +2590,30 @@ function Editor({
       editor
         .chain()
         .focus()
-        // Delete spacers first (after highlighted text, so from/to stay valid)
-        .command(({ tr }) => {
-          tr.delete(spacerFrom, spacerTo);
+        // Remove the suggestion UI first (spacers for overlay mode; node for in-flow mode)
+        .command(({ tr, state }) => {
+          if (USE_INFLOW_SUGGESTIONS) {
+            const pos = (() => {
+              let found: number | null = null;
+              state.doc.descendants((node, p) => {
+                if (node.type?.name === "suggestionBlock" && (node.attrs as any)?.rewriteId === rewriteId) {
+                  found = p;
+                  return false;
+                }
+                return true;
+              });
+              return found;
+            })();
+            // #region agent log
+            fetch('http://127.0.0.1:7243/ingest/e7e07eac-9415-495e-a623-d26d2f751fe5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7e6622'},body:JSON.stringify({sessionId:'7e6622',runId:'pre-fix',hypothesisId:'A3',location:'Editor.tsx:handleSuggestionAccept',message:'accept_remove_node',data:{rewriteId,foundPos:pos},timestamp:Date.now()})}).catch(()=>{});
+            // #endregion agent log
+            if (pos != null) {
+              const n = state.doc.nodeAt(pos);
+              if (n) tr.delete(pos, pos + n.nodeSize);
+            }
+          } else {
+            tr.delete(spacerFrom, spacerTo);
+          }
           return true;
         })
         // Now replace highlighted text — unset highlight first so new text is clean
@@ -2164,10 +2623,24 @@ function Editor({
         .insertContent(rewriteText)
         .run();
 
-      joinSplitParagraphsAfterSpacerRemoval(editor);
+      // #region agent log
+      requestAnimationFrame(() => {
+        try {
+          fetch('http://127.0.0.1:7243/ingest/e7e07eac-9415-495e-a623-d26d2f751fe5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7e6622'},body:JSON.stringify({sessionId:'7e6622',runId:'pre-fix',hypothesisId:'A4',location:'Editor.tsx:handleSuggestionAccept',message:'accept_post',data:{rewriteId,selFrom:editor.state.selection.from,selTo:editor.state.selection.to,docSize:editor.state.doc.content.size,afterAround:editor.state.doc.textBetween(Math.max(0,from-20),Math.min(editor.state.doc.content.size,to+20),' ')},timestamp:Date.now()})}).catch(()=>{});
+        } catch {}
+      });
+      // #endregion agent log
+
+      if (!USE_INFLOW_SUGGESTIONS) {
+        joinSplitParagraphsAfterSpacerRemoval(editor);
+      }
     },
     [editor]
   );
+
+  useEffect(() => {
+    acceptSuggestionRef.current = handleSuggestionAccept;
+  }, [handleSuggestionAccept]);
 
   // Dismiss/reject — nested drops only the child; root also removes nested children and document highlight
   const handleSuggestionReject = useCallback(
@@ -2224,9 +2697,27 @@ function Editor({
       editor
         .chain()
         .focus()
-        // Delete spacers first
-        .command(({ tr }) => {
-          tr.delete(spacerFrom, spacerTo);
+        // Remove the suggestion UI first (spacers for overlay mode; node for in-flow mode)
+        .command(({ tr, state }) => {
+          if (USE_INFLOW_SUGGESTIONS) {
+            const pos = (() => {
+              let found: number | null = null;
+              state.doc.descendants((node, p) => {
+                if (node.type?.name === "suggestionBlock" && (node.attrs as any)?.rewriteId === rewriteId) {
+                  found = p;
+                  return false;
+                }
+                return true;
+              });
+              return found;
+            })();
+            if (pos != null) {
+              const n = state.doc.nodeAt(pos);
+              if (n) tr.delete(pos, pos + n.nodeSize);
+            }
+          } else {
+            tr.delete(spacerFrom, spacerTo);
+          }
           return true;
         })
         // Remove highlight
@@ -2235,10 +2726,16 @@ function Editor({
         .setTextSelection(to)
         .run();
 
-      joinSplitParagraphsAfterSpacerRemoval(editor);
+      if (!USE_INFLOW_SUGGESTIONS) {
+        joinSplitParagraphsAfterSpacerRemoval(editor);
+      }
     },
     [editor]
   );
+
+  useEffect(() => {
+    rejectSuggestionRef.current = handleSuggestionReject;
+  }, [handleSuggestionReject]);
 
   return (
     <>
@@ -2248,18 +2745,29 @@ function Editor({
         onLlmProviderChange={setLlmProvider}
       />
       <div ref={editorPageAreaRef} className="editor-page-area">
-        <aside className="editor-orchestrator-rail" aria-label="Writing tools">
+        <aside
+          className="editor-orchestrator-rail"
+          aria-label="Writing tools"
+          data-onboard="rail"
+        >
           <ScrutinyPanel
             editor={editor}
             expanded={scrutinyExpanded}
             onExpandedChange={setScrutinyExpanded}
+            trialMode={trialMode}
+            onTrialConsume={(a) => onTrialConsume?.(a) ?? true}
+            onTrialGated={(a) => onTrialGated?.(a)}
           />
           <WritingPulsePanel
             editor={editor}
             expanded={writingPulseExpanded}
             onExpandedChange={setWritingPulseExpanded}
+            grammarCards={grammarCards}
+            selectedGrammarId={selectedGrammarId}
+            onSelectGrammarCard={handleSelectGrammarCard}
+            onAcceptGrammarSuggestion={handleAcceptGrammarSuggestion}
           />
-          <div className="editor-orchestrator-section">
+          <div className="editor-orchestrator-section" data-onboard="orchestrator">
             {orchestratorSectionExpanded ? (
               <>
             <div className="editor-orchestrator-header">
@@ -2278,8 +2786,25 @@ function Editor({
 
             <div className="editor-orchestrator-block">
             <div className="editor-orchestrator-subtitle">
-              Build a sequential specialist chain. Requires a non-empty selection.
+              <p className="editor-orchestrator-lead">
+                In the document, <strong>highlight the sentence or passage</strong> you want this chain to
+                run on. The same text is tinted in the page and shown below so the target is always obvious.
+              </p>
+              <p className="editor-orchestrator-subnote">
+                Nothing runs until you choose Propose sequence or run Sequential / Synthesis.
+              </p>
             </div>
+
+            {orchestratorTargetSnippet ? (
+              <div className="editor-orchestrator-target-preview">
+                <div className="editor-orchestrator-target-label">Orchestrator target</div>
+                <div className="editor-orchestrator-target-quote">{orchestratorTargetSnippet}</div>
+              </div>
+            ) : (
+              <div className="editor-orchestrator-target-empty">
+                No selection yet — click and drag in the document to highlight the text for this chain.
+              </div>
+            )}
 
             <textarea
               className="editor-orchestrator-textarea"
@@ -2293,7 +2818,7 @@ function Editor({
                 type="button"
                 className={`editor-orchestrator-btn${orchestratorIsProposing ? " primary" : ""}`}
                 onClick={handleOrchestratorPropose}
-                disabled={orchestratorIsExecuting || orchestratorIsProposing}
+                disabled={trialMode || orchestratorIsExecuting || orchestratorIsProposing}
               >
                 {orchestratorIsProposing ? "Scanning..." : "Propose sequence"}
               </button>
@@ -2371,7 +2896,7 @@ function Editor({
                 type="button"
                 className="editor-orchestrator-btn"
                 onClick={addOrchestratorStep}
-                disabled={orchestratorIsExecuting || orchestratorIsProposing || orchestratorSpecialists.length === 0}
+                disabled={trialMode || orchestratorIsExecuting || orchestratorIsProposing || orchestratorSpecialists.length === 0}
               >
                 Add monkey
               </button>
@@ -2380,6 +2905,7 @@ function Editor({
                 className="editor-orchestrator-btn"
                 onClick={handleOrchestratorSequential}
                 disabled={
+                  trialMode ||
                   orchestratorIsExecuting ||
                   orchestratorIsProposing ||
                   orchestratorChain.length === 0 ||
@@ -2394,6 +2920,7 @@ function Editor({
                 className="editor-orchestrator-btn primary"
                 onClick={handleOrchestratorSynthesis}
                 disabled={
+                  trialMode ||
                   orchestratorIsExecuting ||
                   orchestratorIsProposing ||
                   orchestratorChain.length === 0 ||
@@ -2404,6 +2931,11 @@ function Editor({
                 Synthesis
               </button>
             </div>
+            {trialMode ? (
+              <div className="editor-orchestrator-muted" data-onboard="orchestrator-locked">
+                Locked in free trial. Sign up to unlock Orchestrator.
+              </div>
+            ) : null}
           </div>
               </>
             ) : null}
@@ -2419,64 +2951,67 @@ function Editor({
           <div
             ref={pageRef}
             className="pages-container"
+            data-onboard="document"
             style={{ minHeight: containerMinHeight }}
             onClick={handlePageClick}
           >
             <div className="page-card" />
-            <div ref={contentRef} className="editor-content">
+            <div ref={contentRef} className="editor-content" data-onboard="editor">
               <EditorContent editor={editor} />
             </div>
 
-          {/* Inline suggestions — root rewrites only; nested refinements render inside the parent card */}
-          {pendingRewrites
-            .filter((rw) => rw.parentId == null)
-            .map((rw) => {
-              const pos = suggestionPositions[rw.id];
-              if (!pos) return null;
+          {!USE_INFLOW_SUGGESTIONS && (
+            <>
+              {/* Inline suggestions (overlay mode) — root rewrites only; nested refinements render inside the parent card */}
+              {pendingRewrites
+                .filter((rw) => rw.parentId == null)
+                .map((rw) => {
+                  const pos = suggestionPositions[rw.id];
+                  if (!pos) return null;
 
-              const nestedChildren = pendingRewrites.filter(
-                (c) => c.parentId === rw.id
-              );
-              const hasNested = nestedChildren.length > 0;
-              const nestedChild = nestedChildren[0];
-              const splitRanges =
-                hasNested && nestedChild && rw.rewriteText
-                  ? (() => {
-                      const t = rw.rewriteText;
-                      const s = Math.max(
-                        0,
-                        Math.min(
-                          nestedChild.parentReplaceStart ?? 0,
-                          t.length
-                        )
-                      );
-                      const e = Math.max(
-                        s,
-                        Math.min(nestedChild.parentReplaceEnd ?? 0, t.length)
-                      );
-                      return {
-                        before: t.slice(0, s),
-                        anchor: t.slice(s, e),
-                        after: t.slice(e),
-                      };
-                    })()
-                  : null;
+                  const nestedChildren = pendingRewrites.filter(
+                    (c) => c.parentId === rw.id
+                  );
+                  const hasNested = nestedChildren.length > 0;
+                  const nestedChild = nestedChildren[0];
+                  const splitRanges =
+                    hasNested && nestedChild && rw.rewriteText
+                      ? (() => {
+                          const t = rw.rewriteText;
+                          const s = Math.max(
+                            0,
+                            Math.min(
+                              nestedChild.parentReplaceStart ?? 0,
+                              t.length
+                            )
+                          );
+                          const e = Math.max(
+                            s,
+                            Math.min(nestedChild.parentReplaceEnd ?? 0, t.length)
+                          );
+                          return {
+                            before: t.slice(0, s),
+                            anchor: t.slice(s, e),
+                            after: t.slice(e),
+                          };
+                        })()
+                      : null;
 
-              return (
-                <div
-                  key={rw.id}
-                  data-rewrite-id={rw.id}
-                  ref={(el) => {
-                    suggestionElRefs.current[rw.id] = el;
-                  }}
-                  className={`inline-suggestion${rw.rewriteText && rw.rewriteText.length <= 60 && !hasNested ? " inline-suggestion-compact" : ""}`}
-                  style={{
-                    position: "absolute",
-                    top: `${pos.top}px`,
-                    left: 0,
-                    right: 0,
-                  }}
-                >
+                  return (
+                    <div
+                      key={rw.id}
+                      data-rewrite-id={rw.id}
+                      ref={(el) => {
+                        suggestionElRefs.current[rw.id] = el;
+                      }}
+                      className={`inline-suggestion${rw.rewriteText && rw.rewriteText.length <= 60 && !hasNested ? " inline-suggestion-compact" : ""}`}
+                      style={{
+                        position: "absolute",
+                        top: `${pos.top}px`,
+                        left: 0,
+                        right: 0,
+                      }}
+                    >
                   {rw.isLoading && (
                     <div className="inline-suggestion-loading">
                       <div className="inline-suggestion-spinner" />
@@ -2742,9 +3277,11 @@ function Editor({
                       )}
                     </>
                   )}
-                </div>
-              );
-            })}
+                    </div>
+                  );
+                })}
+            </>
+          )}
         </div>
           </div>
           </div>
@@ -2760,6 +3297,7 @@ function Editor({
                 aria-expanded={false}
                 aria-label="Expand AI Scrutiny"
                 title="Show AI Scrutiny"
+                data-onboard="scrutiny-tab"
               >
                 <span className="editor-sidebar-reveal-label">Scrutiny</span>
               </button>
@@ -2772,6 +3310,7 @@ function Editor({
                 aria-expanded={false}
                 aria-label="Expand Editor"
                 title="Show Editor"
+                data-onboard="editor-tab"
               >
                 <span className="editor-sidebar-reveal-label">Editor</span>
               </button>
@@ -2784,6 +3323,7 @@ function Editor({
                 aria-expanded={false}
                 aria-label="Expand Orchestrator"
                 title="Show Orchestrator"
+                data-onboard="orchestrator-tab"
               >
                 <span className="editor-sidebar-reveal-label">Orchestrator</span>
               </button>
@@ -2802,6 +3342,7 @@ function Editor({
             onClick={() => setShowMonkeyTimeline(true)}
             aria-label="Show Monkey timeline"
             title="Show Monkey timeline"
+            data-onboard="timeline"
           >
             <span className="editor-sidebar-reveal-label">Timeline</span>
           </button>
@@ -2816,6 +3357,7 @@ function Editor({
         onAgentChange={setSelectedAgentId}
         selectedContextIds={selectedContextIds}
         onContextChange={setSelectedContextIds}
+        disableOutsideClose={trialMode && tourStepId === "overlay"}
       />
     </>
   );

@@ -8,9 +8,9 @@ import {
   findAdverbMatches,
   findPassiveMatches,
   findQualifierMatches,
-  getSentenceList,
-  wordCount,
 } from "./writingAnalysis";
+
+export type GrammarSentenceRange = { start: number; end: number };
 
 export type TextCharMap = {
   text: string;
@@ -89,27 +89,39 @@ export function buildTextCharMap(editor: Editor): TextCharMap | null {
   return { text, charPos };
 }
 
+/** Inclusive char start, exclusive char end in `getText()` space → ProseMirror doc range (from inclusive, to exclusive). */
+export function charRangeToDocRange(
+  map: TextCharMap,
+  start: number,
+  end: number
+): { from: number; to: number } | null {
+  if (end <= start) return null;
+  const from = map.charPos(start);
+  const last = end - 1;
+  const toPos = map.charPos(last);
+  if (from == null || toPos == null) return null;
+  return { from, to: toPos + 1 };
+}
+
 function rangeToDecoration(
   map: TextCharMap,
   start: number,
   end: number,
   className: string
 ): Decoration | null {
-  if (end <= start) return null;
-  const from = map.charPos(start);
-  const last = end - 1;
-  const toPos = map.charPos(last);
-  if (from == null || toPos == null) return null;
-  return Decoration.inline(from, toPos + 1, {
+  const r = charRangeToDocRange(map, start, end);
+  if (!r) return null;
+  return Decoration.inline(r.from, r.to, {
     class: `writing-signal ${className}`,
   });
 }
 
 /**
- * Sentences (hard / very hard) and weakeners (blue).
+ * Grammar-issue sentences, weakeners (blue), and optional local signals.
  */
 export function buildWritingHighlightDecorations(
-  editor: Editor
+  editor: Editor,
+  grammarSentenceRanges: GrammarSentenceRange[] = []
 ): Decoration[] {
   const map = buildTextCharMap(editor);
   if (!map) return [];
@@ -119,31 +131,14 @@ export function buildWritingHighlightDecorations(
   const sentenceDecorations: Decoration[] = [];
   const wordDecorations: Decoration[] = [];
 
-  const sentences = getSentenceList(text);
-  let cursor = 0;
-  for (const sent of sentences) {
-    const idx = text.indexOf(sent, cursor);
-    if (idx === -1) continue;
-    const wc = wordCount(sent);
-    const end = idx + sent.length;
-    if (wc > 24) {
-      const d = rangeToDecoration(
-        map,
-        idx,
-        end,
-        "writing-signal--sentence-very-hard"
-      );
-      if (d) sentenceDecorations.push(d);
-    } else if (wc > 14) {
-      const d = rangeToDecoration(
-        map,
-        idx,
-        end,
-        "writing-signal--sentence-hard"
-      );
-      if (d) sentenceDecorations.push(d);
-    }
-    cursor = end;
+  for (const { start, end } of grammarSentenceRanges) {
+    const d = rangeToDecoration(
+      map,
+      start,
+      end,
+      "writing-signal--grammar-error"
+    );
+    if (d) sentenceDecorations.push(d);
   }
 
   for (const m of findAdverbMatches(text)) {

@@ -1,5 +1,5 @@
 /**
- * HTTP client for the Scrutiny service only (`/api/scrutiny/*`).
+ * HTTP client for the Scrutiny service (`/api/scrutiny/*`).
  * Rewrite, orchestrator, and agent search use Supabase Edge Functions.
  *
  * - Dev: Vite proxies `/api/scrutiny` → localhost:3001 and can inject X-Shared-Secret from server/.env.

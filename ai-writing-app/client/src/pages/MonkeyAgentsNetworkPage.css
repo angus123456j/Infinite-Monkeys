@@ -108,14 +108,14 @@
   bottom: 1rem;
   z-index: 30;
   pointer-events: auto;
-  width: 320px;
+  width: 280px;
   max-width: calc(100vw - 2rem);
-  padding: 0.9rem 1rem;
+  padding: 0.65rem 0.8rem 0.7rem;
   background: rgba(248, 246, 241, 0.88);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid rgba(201, 168, 76, 0.35);
-  border-radius: 14px;
+  border-radius: 12px;
   box-shadow: 0 8px 40px rgba(27, 58, 92, 0.12);
 }
 
@@ -123,19 +123,19 @@
   display: block;
   font-family: "Cinzel", "Times New Roman", serif;
   font-weight: 600;
-  font-size: 0.95rem;
+  font-size: 0.85rem;
   color: #1b3a5c;
   letter-spacing: 0.03em;
-  margin-bottom: 0.4rem;
+  margin-bottom: 0.35rem;
 }
 
 .network-search-input {
   width: 100%;
-  padding: 0.6rem 0.75rem;
+  padding: 0.45rem 0.6rem;
   border-radius: 10px;
   border: 1px solid rgba(201, 168, 76, 0.45);
   background: rgba(255, 255, 255, 0.7);
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   outline: none;
 }
 
@@ -145,8 +145,8 @@
 }
 
 .network-search-meta {
-  margin-top: 0.45rem;
-  font-size: 0.8rem;
+  margin-top: 0.4rem;
+  font-size: 0.75rem;
   color: #8b7235;
 }
 
@@ -168,6 +168,73 @@
   border-radius: 14px;
   box-shadow: 0 8px 40px rgba(27, 58, 92, 0.12);
   pointer-events: none;
+}
+
+.network-overlay-panel--pinned {
+  pointer-events: auto;
+}
+
+.network-overlay-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.network-overlay-panel-close {
+  pointer-events: auto;
+  border: 1px solid rgba(201, 168, 76, 0.35);
+  background: rgba(255, 255, 255, 0.55);
+  color: #1b3a5c;
+  font: inherit;
+  cursor: pointer;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  flex: 0 0 auto;
+}
+
+.network-overlay-panel-close:hover {
+  background: rgba(248, 246, 241, 0.95);
+  border-color: rgba(201, 168, 76, 0.7);
+}
+
+.network-overlay-panel-actions {
+  margin-top: 1.05rem;
+  display: flex;
+  justify-content: flex-start;
+  pointer-events: auto;
+}
+
+.network-overlay-panel-save {
+  pointer-events: auto;
+  height: 40px;
+  padding: 0 0.9rem;
+  min-width: 200px;
+  font-family: "Cinzel", "Times New Roman", serif;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #1b3a5c;
+  background: linear-gradient(180deg, rgba(248, 246, 241, 0.95), rgba(248, 246, 241, 0.75));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1.5px solid rgba(201, 168, 76, 0.55);
+  border-radius: 0px;
+  cursor: pointer;
+  letter-spacing: 0.04em;
+  transition: background 0.2s, border-color 0.2s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 20px rgba(27, 58, 92, 0.08);
+}
+
+.network-overlay-panel-save:hover {
+  background: rgba(248, 246, 241, 0.95);
+  border-color: rgba(201, 168, 76, 0.7);
 }
 
 .network-overlay-panel-title {

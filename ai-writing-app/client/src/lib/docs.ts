@@ -1,5 +1,6 @@
 import { supabase } from "./supabase";
 import type { AgentInvocationLogEntry } from "../components/AgentInvocationTimeline";
+import { requireUserId } from "./auth";
 
 export interface DocMeta {
   id: string;
@@ -69,9 +70,11 @@ function saveFolders(folders: FolderMeta[]) {
 // ——— Documents (Supabase) ———
 
 export async function listDocs(): Promise<DocMeta[]> {
+  const userId = await requireUserId();
   const { data, error } = await supabase
     .from("documents")
     .select("id, title, createdAt, updatedAt, folderId")
+    .eq("user_id", userId)
     .order("createdAt", { ascending: false });
   if (error) throw new Error(error.message);
   return (data as DbDocument[]).map(toDocMeta);
@@ -81,11 +84,12 @@ export async function createDoc(options?: {
   title?: string;
   folderId?: string | null;
 }): Promise<DocMeta> {
+  const userId = await requireUserId();
   const title = options?.title?.trim() || "Untitled document";
   const folderId = options?.folderId ?? null;
   const { data, error } = await supabase
     .from("documents")
-    .insert({ title, content: "<p></p>", folderId })
+    .insert({ user_id: userId, title, content: "<p></p>", folderId })
     .select()
     .single();
   if (error) throw new Error(error.message);
@@ -93,10 +97,12 @@ export async function createDoc(options?: {
 }
 
 export async function getDoc(id: string): Promise<DocMeta | null> {
+  const userId = await requireUserId();
   const { data, error } = await supabase
     .from("documents")
     .select("id, title, createdAt, updatedAt, folderId")
     .eq("id", id)
+    .eq("user_id", userId)
     .single();
   if (error) return null;
   return toDocMeta(data as DbDocument);
@@ -104,10 +110,12 @@ export async function getDoc(id: string): Promise<DocMeta | null> {
 
 /** Fetch full document including content (for editor). */
 export async function getDocument(id: string): Promise<DocumentWithContent | null> {
+  const userId = await requireUserId();
   const { data, error } = await supabase
     .from("documents")
     .select("*")
     .eq("id", id)
+    .eq("user_id", userId)
     .single();
   if (error) return null;
   const d = data as DbDocument;
@@ -119,15 +127,22 @@ export async function getDocument(id: string): Promise<DocumentWithContent | nul
 }
 
 export async function deleteDoc(id: string): Promise<void> {
-  const { error } = await supabase.from("documents").delete().eq("id", id);
+  const userId = await requireUserId();
+  const { error } = await supabase
+    .from("documents")
+    .delete()
+    .eq("id", id)
+    .eq("user_id", userId);
   if (error) throw new Error(error.message);
 }
 
 export async function updateDocTitle(id: string, title: string): Promise<void> {
+  const userId = await requireUserId();
   const { error } = await supabase
     .from("documents")
     .update({ title })
-    .eq("id", id);
+    .eq("id", id)
+    .eq("user_id", userId);
   if (error) throw new Error(error.message);
 }
 
@@ -140,10 +155,12 @@ export async function saveDoc(
     monkeyTimeline?: AgentInvocationLogEntry[];
   }
 ): Promise<void> {
+  const userId = await requireUserId();
   const { error } = await supabase
     .from("documents")
     .update(updates)
-    .eq("id", id);
+    .eq("id", id)
+    .eq("user_id", userId);
   if (error) throw new Error(error.message);
 }
 
@@ -155,10 +172,12 @@ export function listDocsInFolder(docs: DocMeta[], folderId: string | null): DocM
 }
 
 export async function moveDoc(id: string, targetFolderId: string | null): Promise<void> {
+  const userId = await requireUserId();
   const { error } = await supabase
     .from("documents")
     .update({ folderId: targetFolderId })
-    .eq("id", id);
+    .eq("id", id)
+    .eq("user_id", userId);
   if (error) throw new Error(error.message);
 }
 

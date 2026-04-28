@@ -1,10 +1,9 @@
 import { Link, useSearchParams, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { createDoc } from "../lib/docs";
+import { supabase } from "../lib/supabase";
 
 const VIDEO_PATH = "/models/monkeyvid.mp4";
-/** Swap to `/videos/product-demo.mp4` after adding `client/public/videos/product-demo.mp4`. */
-const HERO_DEMO_VIDEO = VIDEO_PATH;
+const THINKING_MONKEY_PATH = "/images/thinkingmonkey.png";
 const AUTO_SCROLL_AT = 0.9;
 const TYPEWRITER_LINE1 = "Infinite drafts. One perfect sentence.";
 const TYPEWRITER_LINE2 = "Write alongside infinite minds.";
@@ -80,18 +79,27 @@ export default function HomePage() {
   const [startWritingPending, setStartWritingPending] = useState(false);
   const line2UnlockedRef = useRef(false);
 
+  useEffect(() => {
+    let mounted = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      if (data.session) navigate("/drive", { replace: true });
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
+      if (session) navigate("/drive", { replace: true });
+    });
+    return () => {
+      mounted = false;
+      sub.subscription.unsubscribe();
+    };
+  }, [navigate]);
+
   async function handleStartWriting() {
     if (startWritingPending) return;
     setStartWritingPending(true);
-    try {
-      const meta = await createDoc({ title: "Untitled document" });
-      navigate(`/doc/${meta.id}`);
-    } catch (err) {
-      console.error("Failed to create document:", err);
-      navigate("/docs");
-    } finally {
-      setStartWritingPending(false);
-    }
+    navigate("/trial", { state: { autoIntro: true } });
+    // Allow route transition to complete before clearing pending.
+    requestAnimationFrame(() => setStartWritingPending(false));
   }
 
   useEffect(() => {
@@ -107,10 +115,15 @@ export default function HomePage() {
   useEffect(() => {
     if (!introDone) return;
     if (searchParams.get("section") === "about") return;
+    // Once the intro is complete, replace the history entry with skipIntro=1
+    // so browser back from /doc/:id doesn't replay the intro video.
+    if (searchParams.get("skipIntro") !== "1") {
+      navigate("/?skipIntro=1", { replace: true, state: { skipIntro: true } });
+    }
     requestAnimationFrame(() => {
       window.scrollTo({ top: 0, left: 0, behavior: "auto" });
     });
-  }, [introDone, searchParams]);
+  }, [introDone, searchParams, navigate]);
 
   useEffect(() => {
     const section = searchParams.get("section");
@@ -184,15 +197,11 @@ export default function HomePage() {
       const content = contentRef.current;
       if (!content) {
         setIntroDone(true);
-        requestAnimationFrame(() => window.scrollTo({ top: 0, left: 0, behavior: "auto" }));
         return;
       }
 
       const removeIntroAndAlignScroll = () => {
         setIntroDone(true);
-        requestAnimationFrame(() => {
-          window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-        });
       };
 
       let fallbackId: number | null = null;
@@ -286,17 +295,6 @@ export default function HomePage() {
               <span className="home-nav-brand-main">Infinite</span>{" "}
               <span className="home-nav-brand-accent">Monkeys</span>
             </span>
-            <nav className="home-nav-links">
-              <Link to="/docs" className="home-nav-link">
-                Drive
-              </Link>
-              <Link to="/monkey-agents-network" className="home-nav-link">
-                Agents
-              </Link>
-              <Link to="/docs" className="home-nav-cta">
-                Open app
-              </Link>
-            </nav>
           </div>
         </header>
 
@@ -323,26 +321,29 @@ export default function HomePage() {
                 >
                   {startWritingPending ? "Opening…" : "Start writing"}
                 </button>
-                <Link to="/monkey-agents-network" className="home-hero-cta secondary">
-                  Browse agents
+                <Link
+                  to="/signup"
+                  className="home-hero-cta secondary home-hero-cta--signup"
+                >
+                  <span className="home-hero-cta--signup-label">Sign Up</span>
                 </Link>
               </div>
+              <p className="home-hero-loginline">
+                <span>Already made an account</span>
+                <span className="home-hero-loginarrow" aria-hidden />
+                <Link to="/login" className="home-hero-loginbtn">
+                  Log in
+                </Link>
+              </p>
               <p className="home-hero-subline">
                 Highlight text, summon specialist agents, and pull from a context library that
                 travels with your writing.
               </p>
             </div>
-            <div className="home-hero-demo">
-              <video
-                className="home-hero-demo-video"
-                controls
-                playsInline
-                preload="metadata"
-                aria-label="Product demo video"
-              >
-                <source src={HERO_DEMO_VIDEO} type="video/mp4" />
-              </video>
-            </div>
+            <div
+              className="home-hero-demo home-hero-demo-placeholder"
+              aria-hidden="true"
+            />
           </div>
         </section>
 
@@ -351,6 +352,14 @@ export default function HomePage() {
           id="about"
           className="home-about-section home-about-section--wave"
         >
+          <img
+            className="home-about-thinking-monkey"
+            src={THINKING_MONKEY_PATH}
+            alt=""
+            aria-hidden="true"
+            loading="lazy"
+            decoding="async"
+          />
           <div className="home-shell home-about-wave-inner">
             <div
               className={`home-about-intro${aboutIntroVisible ? " home-about-intro--visible" : ""}`}

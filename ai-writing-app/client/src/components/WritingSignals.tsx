@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Editor } from "@tiptap/core";
+import type { GrammarSentenceCard } from "../lib/harperGrammar";
 import {
   computeWritingMetrics,
   findAdverbMatches,
@@ -12,13 +13,6 @@ const DEBOUNCE_MS = 200;
 
 type Severity = "safe" | "warn" | "severe";
 
-function gradeSeverity(grade: number): Severity {
-  if (Number.isNaN(grade)) return "safe";
-  if (grade <= 9) return "safe";
-  if (grade <= 12) return "warn";
-  return "severe";
-}
-
 /** 0 = safe, 1..threshold-1 = warn, threshold+ = severe */
 function countSeverity(n: number, severeThreshold: number): Severity {
   if (n === 0) return "safe";
@@ -26,11 +20,27 @@ function countSeverity(n: number, severeThreshold: number): Severity {
   return "severe";
 }
 
-interface WritingSignalsProps {
-  editor: Editor | null;
+function truncate(s: string, max: number): string {
+  const t = s.trim();
+  if (t.length <= max) return t;
+  return `${t.slice(0, max - 1)}…`;
 }
 
-export default function WritingSignals({ editor }: WritingSignalsProps) {
+interface WritingSignalsProps {
+  editor: Editor | null;
+  grammarCards: GrammarSentenceCard[];
+  selectedGrammarId: string | null;
+  onSelectGrammarCard: (id: string | null) => void;
+  onAcceptGrammarSuggestion: (id: string) => void;
+}
+
+export default function WritingSignals({
+  editor,
+  grammarCards,
+  selectedGrammarId,
+  onSelectGrammarCard,
+  onAcceptGrammarSuggestion,
+}: WritingSignalsProps) {
   const [text, setText] = useState("");
   const [weakenersOpen, setWeakenersOpen] = useState(false);
 
@@ -77,18 +87,10 @@ export default function WritingSignals({ editor }: WritingSignalsProps) {
     [qualifierMatches]
   );
 
-  const readSev = Number.isFinite(metrics.readabilityGrade)
-    ? gradeSeverity(metrics.readabilityGrade)
-    : "muted";
-  const hardSev = countSeverity(metrics.hardSentences, 5);
-  const vHardSev = countSeverity(metrics.veryHardSentences, 3);
+  const grammarSev = countSeverity(grammarCards.length, 4);
   const advSev = countSeverity(metrics.adverbs, 8);
   const passSev = countSeverity(metrics.passiveVoice, 4);
   const qualSev = countSeverity(metrics.qualifiers, 3);
-
-  const gradeLabel = Number.isFinite(metrics.readabilityGrade)
-    ? `Grade ${metrics.readabilityGrade}`
-    : "—";
 
   const hasWeakenersDetail =
     adverbWords.length > 0 ||
@@ -99,27 +101,74 @@ export default function WritingSignals({ editor }: WritingSignalsProps) {
     <section className="writing-pulse" aria-label="Editor metrics">
       <ul className="writing-pulse-rows">
         <li className="writing-pulse-row">
-          <span className="writing-pulse-label">Readability</span>
+          <span className="writing-pulse-label">Grammar errors</span>
           <span
-            className={`writing-pulse-value writing-pulse-value--${readSev}`}
-            title="Approximate Flesch–Kincaid grade level (local)"
+            className={`writing-pulse-value writing-pulse-value--${grammarSev}`}
+            title="Harper — offline grammar & spelling (WASM, open source)"
           >
-            {gradeLabel}
-          </span>
-        </li>
-        <li className="writing-pulse-row">
-          <span className="writing-pulse-label">Hard sentence to read</span>
-          <span className={`writing-pulse-value writing-pulse-value--${hardSev}`}>
-            {metrics.hardSentences}
-          </span>
-        </li>
-        <li className="writing-pulse-row">
-          <span className="writing-pulse-label">Very hard sentences to read</span>
-          <span className={`writing-pulse-value writing-pulse-value--${vHardSev}`}>
-            {metrics.veryHardSentences}
+            {grammarCards.length}
           </span>
         </li>
       </ul>
+
+      {grammarCards.length > 0 && (
+        <div
+          className="writing-pulse-grammar-list"
+          role="list"
+          aria-label="Sentences with suggested fixes"
+        >
+          {grammarCards.map((card) => {
+            const active = card.id === selectedGrammarId;
+            return (
+              <div
+                key={card.id}
+                className={`writing-pulse-grammar-card${
+                  active ? " writing-pulse-grammar-card--active" : ""
+                }`}
+                role="listitem"
+              >
+                <button
+                  type="button"
+                  className="writing-pulse-grammar-card-hit"
+                  onClick={() =>
+                    onSelectGrammarCard(active ? null : card.id)
+                  }
+                  aria-pressed={active}
+                >
+                  <span className="writing-pulse-grammar-card-preview">
+                    {truncate(card.original, 120)}
+                  </span>
+                </button>
+                {active && (
+                  <div className="writing-pulse-grammar-detail">
+                    {card.hints.slice(0, 3).map((h, hi) => (
+                      <p
+                        key={`${card.id}-hint-${hi}`}
+                        className="writing-pulse-grammar-hint"
+                      >
+                        {h}
+                      </p>
+                    ))}
+                    <div className="writing-pulse-grammar-suggestion-label">
+                      Suggested
+                    </div>
+                    <div className="writing-pulse-grammar-suggestion-text">
+                      {card.suggested}
+                    </div>
+                    <button
+                      type="button"
+                      className="writing-pulse-grammar-accept"
+                      onClick={() => onAcceptGrammarSuggestion(card.id)}
+                    >
+                      Accept
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       <div className="writing-pulse-group">
         <button

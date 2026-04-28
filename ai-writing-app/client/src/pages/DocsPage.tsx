@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactElement } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { supabase } from "../lib/supabase";
 import {
   listDocs,
   createDoc,
@@ -12,7 +13,8 @@ import {
 } from "../lib/docs";
 import { listContexts, createContext, deleteContext, type ContextItem } from "../lib/contexts";
 import {
-  listAgents,
+  isBakedInAgentName,
+  listDriveAgents,
   createAgent,
   deleteAgent,
   type AgentMeta,
@@ -65,6 +67,22 @@ export default function DocsPage() {
   const [deleteFolderTitle, setDeleteFolderTitle] = useState("");
   const [deleteFolderTypedTitle, setDeleteFolderTypedTitle] = useState("");
   const navigate = useNavigate();
+  // Guide now lives on a dedicated docs-style page.
+
+  useEffect(() => {
+    let mounted = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      if (!data.session) navigate("/?skipIntro=1", { replace: true });
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
+      if (!session) navigate("/?skipIntro=1", { replace: true });
+    });
+    return () => {
+      mounted = false;
+      sub.subscription.unsubscribe();
+    };
+  }, [navigate]);
 
   useEffect(() => {
     listDocs()
@@ -75,7 +93,7 @@ export default function DocsPage() {
     listContexts()
       .then(setContexts)
       .catch(() => setContexts([]));
-    listAgents()
+    listDriveAgents()
       .then(setAgents)
       .catch(() => setAgents([]));
   }, []);
@@ -245,7 +263,7 @@ export default function DocsPage() {
       const trimmed = newAgentName.trim() || "New monkey";
       const agent = await createAgent({ name: trimmed });
       setIsNewAgentModalOpen(false);
-      listAgents().then(setAgents);
+      listDriveAgents().then(setAgents);
       navigate(`/monkey-agent/${agent.id}`);
     } catch (err) {
       console.error("Failed to create agent:", err);
@@ -257,6 +275,8 @@ export default function DocsPage() {
   }
 
   async function handleAgentDelete(id: string, title: string) {
+    // Core baked-in monkeys are not deletable.
+    if (isBakedInAgentName(title)) return;
     setDeleteAgentId(id);
     setDeleteAgentTitle(title);
     setDeleteAgentTypedTitle("");
@@ -280,7 +300,7 @@ export default function DocsPage() {
       setDeleteAgentId(null);
       setDeleteAgentTitle("");
       setDeleteAgentTypedTitle("");
-      listAgents().then(setAgents);
+      listDriveAgents().then(setAgents);
     } catch (err) {
       console.error("Failed to delete agent:", err);
     }
@@ -322,9 +342,14 @@ export default function DocsPage() {
   return (
     <div className="docs-page">
       <header className="docs-header">
-        <Link to="/" state={{ skipIntro: true }} className="docs-logo">
+        <button
+          type="button"
+          className="docs-logo"
+          onClick={() => navigate("/drive")}
+          aria-label="Infinite Monkeys (Drive home)"
+        >
           Infinite Monkeys
-        </Link>
+        </button>
         <div className="docs-header-main">
           <h2 className="docs-title">Infinite Monkeys Drive</h2>
           <div className="docs-drive-tabs" role="tablist" aria-label="Drive type">
@@ -368,6 +393,25 @@ export default function DocsPage() {
               Monkey Agents
             </button>
           </div>
+        </div>
+        <div className="docs-header-actions">
+          <button
+            type="button"
+            className="docs-header-action"
+            onClick={() => navigate("/guide")}
+          >
+            Total guide
+          </button>
+          <button
+            type="button"
+            className="docs-header-action docs-header-action--signout"
+            onClick={async () => {
+              await supabase.auth.signOut();
+              navigate("/?skipIntro=1", { replace: true });
+            }}
+          >
+            Sign out
+          </button>
         </div>
       </header>
       <div className="docs-main">
@@ -682,6 +726,13 @@ export default function DocsPage() {
               >
                 <span className="docs-new-icon">+</span>
                 New monkey agent
+              </button>
+              <button
+                type="button"
+                className="docs-new-btn docs-new-btn-secondary"
+                onClick={() => navigate("/monkey-agents-network")}
+              >
+                Explore agent net
               </button>
               <div className="docs-sidebar-note">
                 Define specialist monkeys you can later summon in the editor.

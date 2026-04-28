@@ -39,7 +39,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // Only the scrutiny endpoint still hits the Express server.
+      // Scrutiny proxy to the Express server.
       // CRUD → Supabase Postgres, LLM endpoints → Supabase Edge Functions.
       "/api/scrutiny": {
         target: "http://127.0.0.1:3001",

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import Editor from "../components/Editor";
 import DocMenuBar from "../components/DocMenuBar";
@@ -11,6 +11,20 @@ import { parseMonkeyTimeline } from "../lib/monkeyTimeline";
 import type { AgentInvocationLogEntry } from "../components/AgentInvocationTimeline";
 import { createContext } from "../lib/contexts";
 import type { Editor as TiptapEditor } from "@tiptap/react";
+
+/** True when the doc is still the default empty state (new or never edited in a meaningful way). */
+function isEffectivelyEmptyDocument(
+  contentHtml: string,
+  timeline: AgentInvocationLogEntry[],
+): boolean {
+  if (timeline.length > 0) return false;
+  const textOnly = contentHtml
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return textOnly.length === 0;
+}
 
 export default function EditorPage() {
   const { id } = useParams<{ id: string }>();
@@ -26,6 +40,11 @@ export default function EditorPage() {
   const [wordCountOpen, setWordCountOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [exportingToContext, setExportingToContext] = useState(false);
+
+  const collapseSidePanelsOnMount = useMemo(
+    () => isEffectivelyEmptyDocument(initialContent, initialMonkeyTimeline),
+    [initialContent, initialMonkeyTimeline],
+  );
 
   useEffect(() => {
     if (!id) {
@@ -136,6 +155,7 @@ export default function EditorPage() {
           key={id}
           docId={id ?? undefined}
           timelineDocumentId={id ?? undefined}
+          collapseSidePanelsOnMount={collapseSidePanelsOnMount}
           initialContent={initialContent}
           initialMonkeyTimeline={initialMonkeyTimeline}
           onSaveContent={handleSaveContent}

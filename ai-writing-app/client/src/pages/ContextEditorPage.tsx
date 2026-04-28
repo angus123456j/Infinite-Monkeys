@@ -8,12 +8,17 @@ import KeyboardShortcutsModal from "../components/KeyboardShortcutsModal";
 import EditorContext from "../contexts/EditorContext";
 import { getContext, updateContext } from "../lib/contexts";
 import type { Editor as TiptapEditor } from "@tiptap/react";
+import { parseMonkeyTimeline } from "../lib/monkeyTimeline";
+import type { AgentInvocationLogEntry } from "../components/AgentInvocationTimeline";
 
 export default function ContextEditorPage() {
   const { id } = useParams<{ id: string }>();
   const [editor, setEditor] = useState<TiptapEditor | null>(null);
   const [title, setTitle] = useState("Untitled context");
   const [initialContent, setInitialContent] = useState<string>("<p></p>");
+  const [initialMonkeyTimeline, setInitialMonkeyTimeline] = useState<
+    AgentInvocationLogEntry[]
+  >([]);
   const [loading, setLoading] = useState(true);
   const [findReplaceOpen, setFindReplaceOpen] = useState(false);
   const [wordCountOpen, setWordCountOpen] = useState(false);
@@ -26,6 +31,7 @@ export default function ContextEditorPage() {
         if (ctx) {
           setTitle(ctx.title);
           setInitialContent(ctx.description || "<p></p>");
+          setInitialMonkeyTimeline(parseMonkeyTimeline(ctx.monkeyTimeline));
         }
         setLoading(false);
       })
@@ -93,6 +99,10 @@ export default function ContextEditorPage() {
           key={id}
           docId={id ?? undefined}
           initialContent={initialContent}
+          initialMonkeyTimeline={initialMonkeyTimeline}
+          onSaveMonkeyTimeline={(entries) => {
+            if (id) void updateContext(id, { monkeyTimeline: entries });
+          }}
           onSaveContent={handleSaveContent}
           onEditorReady={setEditor}
         />

@@ -9,7 +9,7 @@ import { agentsToFeatureMatrix } from "../lib/agentSemanticEmbedding";
 import { computeClusterTitles } from "../lib/clusterLabels";
 import { layoutClusteredNodes } from "../lib/clusterLayout";
 import { kMeans } from "../lib/kmeans";
-import { listAgents, searchAgents, type AgentMeta } from "../lib/agents";
+import { listNetworkAgents, saveAgentFromNetwork, searchAgents, type AgentMeta } from "../lib/agents";
 import "./MonkeyAgentsNetworkPage.css";
 
 /** Heuristic K (sqrt-ish), capped so the legend stays readable. */
@@ -23,6 +23,7 @@ export default function MonkeyAgentsNetworkPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -33,7 +34,7 @@ export default function MonkeyAgentsNetworkPage() {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    listAgents()
+    listNetworkAgents()
       .then((a) => {
         if (cancelled) return;
         setAgents(a);
@@ -102,6 +103,16 @@ export default function MonkeyAgentsNetworkPage() {
     [agents, hoveredId]
   );
 
+  const selectedAgent = useMemo(
+    () => (selectedId ? agents.find((a) => a.id === selectedId) ?? null : null),
+    [agents, selectedId]
+  );
+
+  const activeAgent = selectedAgent ?? hoveredAgent;
+  const panelPinned = Boolean(selectedAgent);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState<Record<string, boolean>>({});
+
   useEffect(() => {
     const q = searchQuery.trim();
     if (!q) {
@@ -169,6 +180,7 @@ export default function MonkeyAgentsNetworkPage() {
         positions={clusterPositions}
         edgeMode={edgeMode}
         onHoverNode={setHoveredId}
+        onClickNode={(id) => setSelectedId(id)}
         highlightNodeIds={highlightNodeIds}
       />
 
@@ -197,21 +209,52 @@ export default function MonkeyAgentsNetworkPage() {
         </aside>
       )}
 
-      {hoveredAgent && (
-        <aside className="network-overlay-panel">
-          <h2 className="network-overlay-panel-title">{hoveredAgent.name}</h2>
+      {activeAgent && (
+        <aside className={panelPinned ? "network-overlay-panel network-overlay-panel--pinned" : "network-overlay-panel"}>
+          <div className="network-overlay-panel-head">
+            <h2 className="network-overlay-panel-title">{activeAgent.name}</h2>
+            {panelPinned && (
+              <button
+                type="button"
+                className="network-overlay-panel-close"
+                onClick={() => setSelectedId(null)}
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            )}
+          </div>
           <div className="network-overlay-panel-divider" />
           <p className="network-overlay-panel-text" style={{ whiteSpace: "pre-wrap" }}>
             {[
-              hoveredAgent.role ? `Archetype: ${hoveredAgent.role}` : "",
-              hoveredAgent.strengths ? `\nStrengths:\n${hoveredAgent.strengths}` : "",
-              hoveredAgent.identity ? `\nIdentity:\n${hoveredAgent.identity}` : "",
-              hoveredAgent.behavior ? `\nBehavior:\n${hoveredAgent.behavior}` : "",
-              hoveredAgent.constraints ? `\nConstraints:\n${hoveredAgent.constraints}` : "",
+              activeAgent.role ? `Archetype: ${activeAgent.role}` : "",
+              activeAgent.strengths ? `\nStrengths:\n${activeAgent.strengths}` : "",
+              activeAgent.identity ? `\nIdentity:\n${activeAgent.identity}` : "",
+              activeAgent.behavior ? `\nBehavior:\n${activeAgent.behavior}` : "",
+              activeAgent.constraints ? `\nConstraints:\n${activeAgent.constraints}` : "",
             ]
               .filter(Boolean)
               .join("\n")}
           </p>
+
+          {panelPinned && (
+            <div className="network-overlay-panel-actions">
+              <button
+                type="button"
+                className="network-overlay-panel-save"
+                disabled={saving || !!saved[activeAgent.id]}
+                onClick={() => {
+                  setSaving(true);
+                  saveAgentFromNetwork(activeAgent.id)
+                    .then(() => setSaved((s) => ({ ...s, [activeAgent.id]: true })))
+                    .catch(() => {})
+                    .finally(() => setSaving(false));
+                }}
+              >
+                {saved[activeAgent.id] ? "Saved" : saving ? "Saving…" : "Save to my agents"}
+              </button>
+            </div>
+          )}
         </aside>
       )}
 

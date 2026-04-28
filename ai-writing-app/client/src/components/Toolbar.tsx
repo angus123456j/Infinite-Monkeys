@@ -314,6 +314,7 @@ function Toolbar({ editor, llmProvider, onLlmProviderChange }: ToolbarProps) {
       <button
         type="button"
         className="toolbar-btn guide-btn"
+        data-onboard="guide"
         onClick={() => setIsGuideOpen(true)}
         title="How to use Infinite Monkeys"
       >

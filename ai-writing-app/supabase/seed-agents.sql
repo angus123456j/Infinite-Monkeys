@@ -320,4 +320,10 @@ INSERT INTO "monkey_agents" ("id", "createdAt", "updatedAt", "name", "role", "st
   VALUES ('cmnhrxvy900010msdk9bys54a', '2026-04-02T17:54:19.519Z'::timestamptz, '2026-04-02T17:55:31.780Z'::timestamptz, 'Mo Naqious', 'Specialist', '', NULL, '', '', '', '')
   ON CONFLICT ("id") DO NOTHING;
 
+-- Mark seeded, non-owned rows as templates so every new user sees them.
+-- (User-owned agents will always have `user_id` set, and remain editable/deletable.)
+UPDATE public.monkey_agents
+  SET is_template = true
+  WHERE user_id IS NULL;
+
 COMMIT;

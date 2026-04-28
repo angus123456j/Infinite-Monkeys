@@ -1,5 +1,6 @@
 import { corsHeaders, corsPreflightResponse } from "../_shared/cors.ts";
 import { generateText, getHttpStatusDeep, type LlmProviderMode } from "../_shared/llm.ts";
+import { getAuthedUser, isAuthedError, jsonError } from "../_shared/jwtUser.ts";
 import { parseJsonBody } from "../_shared/request.ts";
 import { sanitizeRewriteOutput } from "../_shared/sanitize.ts";
 import { createServiceClient } from "../_shared/supabase.ts";
@@ -7,7 +8,19 @@ import { createServiceClient } from "../_shared/supabase.ts";
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return corsPreflightResponse();
 
+  const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+  const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+  if (!supabaseUrl || !supabaseAnonKey) {
+    return jsonError("Server misconfiguration", 500);
+  }
+
   try {
+    const userResult = await getAuthedUser(req, supabaseUrl, supabaseAnonKey);
+    if (isAuthedError(userResult)) {
+      return jsonError(userResult.error, userResult.status);
+    }
+    const userId = userResult.id;
+
     const { body, error: parseErr } = await parseJsonBody(req);
     if (parseErr) return parseErr;
 
@@ -45,8 +58,15 @@ Deno.serve(async (req) => {
         .single();
       if (agentErr) {
         console.warn(`[rewrite] agent lookup failed for ${agentId}: ${agentErr.message}`);
+      } else if (data) {
+        const isT = (data as Record<string, unknown>).is_template === true;
+        const uid = (data as Record<string, unknown>).user_id as string | null | undefined;
+        if (isT || uid === userId) {
+          loadedAgent = data;
+        } else {
+          console.warn(`[rewrite] denied agent ${agentId} for user ${userId}`);
+        }
       }
-      loadedAgent = data;
     }
 
     const isSynonymSpecialist =
@@ -108,7 +128,8 @@ Output plain prose only: no markdown (no asterisks, underscores, or backticks us
       const { data: ctxs, error: ctxErr } = await supabase
         .from("contexts")
         .select("*")
-        .in("id", uniqueContextIds);
+        .in("id", uniqueContextIds)
+        .eq("user_id", userId);
 
       if (ctxErr) {
         console.warn(`[rewrite] context lookup failed: ${ctxErr.message}`);

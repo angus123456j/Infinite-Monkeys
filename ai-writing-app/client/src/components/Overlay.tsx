@@ -12,6 +12,7 @@ interface OverlayProps {
   onAgentChange: (agentId: string | null) => void;
   selectedContextIds: string[];
   onContextChange: (contextIds: string[]) => void;
+  disableOutsideClose?: boolean;
 }
 
 function Overlay({
@@ -24,9 +25,19 @@ function Overlay({
   onAgentChange,
   selectedContextIds,
   onContextChange,
+  disableOutsideClose = false,
 }: OverlayProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  const outsideCloseTimeoutRef = useRef<number | null>(null);
+  const outsideHandlerRef = useRef<((e: MouseEvent) => void) | null>(null);
+
+  const close = useCallback((reason: string) => {
+    // #region agent log
+    fetch('http://127.0.0.1:7243/ingest/e7e07eac-9415-495e-a623-d26d2f751fe5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7e6622'},body:JSON.stringify({sessionId:'7e6622',runId:'overlay-debug',hypothesisId:'O1',location:'Overlay.tsx:close',message:'overlay_close_called',data:{reason,isOpen,disableOutsideClose,hasRef:!!overlayRef.current},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion agent log
+    onClose();
+  }, [onClose, isOpen, disableOutsideClose]);
 
   const [agents, setAgents] = useState<AgentMeta[]>([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
@@ -111,27 +122,60 @@ function Overlay({
   useEffect(() => {
     if (!isOpen) return;
     const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") close("escape");
     };
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
-  }, [isOpen, onClose]);
+  }, [isOpen, close]);
 
   // Handle clicks outside overlay to close
   useEffect(() => {
     if (!isOpen) return;
+
+    // Always clear any pending attach / handler first.
+    if (outsideCloseTimeoutRef.current != null) {
+      window.clearTimeout(outsideCloseTimeoutRef.current);
+      outsideCloseTimeoutRef.current = null;
+    }
+    if (outsideHandlerRef.current) {
+      document.removeEventListener("mousedown", outsideHandlerRef.current);
+      outsideHandlerRef.current = null;
+    }
+
+    // #region agent log
+    fetch('http://127.0.0.1:7243/ingest/e7e07eac-9415-495e-a623-d26d2f751fe5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7e6622'},body:JSON.stringify({sessionId:'7e6622',runId:'overlay-debug',hypothesisId:'O2',location:'Overlay.tsx:outsideEffect',message:'outside_effect_setup',data:{isOpen,disableOutsideClose},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion agent log
+
+    if (disableOutsideClose) return;
+
     const handleClickOutside = (e: MouseEvent) => {
       if (overlayRef.current && !overlayRef.current.contains(e.target as Node)) {
-        onClose();
+        // #region agent log
+        fetch('http://127.0.0.1:7243/ingest/e7e07eac-9415-495e-a623-d26d2f751fe5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7e6622'},body:JSON.stringify({sessionId:'7e6622',runId:'overlay-debug',hypothesisId:'O2',location:'Overlay.tsx:handleClickOutside',message:'outside_mousedown',data:{targetTag:(e.target as any)?.tagName ?? null},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion agent log
+        close("outside");
       }
     };
-    setTimeout(() => {
-      document.addEventListener("mousedown", handleClickOutside);
+    outsideHandlerRef.current = handleClickOutside;
+
+    outsideCloseTimeoutRef.current = window.setTimeout(() => {
+      if (outsideHandlerRef.current) {
+        document.addEventListener("mousedown", outsideHandlerRef.current);
+      }
+      outsideCloseTimeoutRef.current = null;
     }, 100);
+
     return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
+      if (outsideCloseTimeoutRef.current != null) {
+        window.clearTimeout(outsideCloseTimeoutRef.current);
+        outsideCloseTimeoutRef.current = null;
+      }
+      if (outsideHandlerRef.current) {
+        document.removeEventListener("mousedown", outsideHandlerRef.current);
+        outsideHandlerRef.current = null;
+      }
     };
-  }, [isOpen, onClose]);
+  }, [isOpen, disableOutsideClose, close]);
 
   if (!isOpen) return null;
 
@@ -143,7 +187,7 @@ function Overlay({
     <div ref={overlayRef} className="ai-overlay" style={overlayStyle}>
       <div className="ai-overlay-header" onMouseDown={handleMouseDown} style={{ cursor: "grab" }}>
         <span className="ai-overlay-title">Summon Infinite Monkeys</span>
-        <button type="button" className="ai-overlay-close" onClick={onClose} title="Close (Esc)">
+        <button type="button" className="ai-overlay-close" onClick={() => close("x")} title="Close (Esc)">
           ×
         </button>
       </div>

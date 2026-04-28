@@ -24,14 +24,39 @@ interface ScrutinyPanelProps {
   editor: TiptapEditor | null;
   expanded: boolean;
   onExpandedChange: (next: boolean) => void;
+  trialMode?: boolean;
+  onTrialConsume?: (action: "scrutiny-selection" | "scrutiny-document") => boolean;
+  onTrialGated?: (action: "scrutiny-selection" | "scrutiny-document") => void;
 }
 
+function safeGetEditorViewDom(editor: TiptapEditor): HTMLElement | null {
+  try {
+    // Tiptap can throw if view isn't mounted yet.
+    const view = (editor as unknown as { view?: { dom?: unknown } }).view;
+    const dom = view?.dom;
+    return dom instanceof HTMLElement ? dom : null;
+  } catch {
+    return null;
+  }
+}
+
+function safeGetEditorView(editor: TiptapEditor): EditorView | null {
+  try {
+    return (editor as unknown as { view?: EditorView }).view ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Flatten doc text between [from, to) for the API and map each character index to a ProseMirror
+ * position (the position *at* that character). For a text node starting at `pos`, char i is at `pos + i`.
+ */
 function extractPlainTextAndMap(editor: TiptapEditor, from: number, to: number): { text: string; posByIndex: number[] } {
   const doc = editor.state.doc;
   let out = "";
   const map: number[] = [];
   let lastWasSpace = true;
-  let lastPos = from;
 
   doc.nodesBetween(from, to, (node, pos) => {
     if (!node.isText) return;
@@ -41,20 +66,36 @@ function extractPlainTextAndMap(editor: TiptapEditor, from: number, to: number):
     const firstIsSpace = /^\s/.test(t);
     if (out.length > 0 && !lastWasSpace && !firstIsSpace) {
       out += " ";
-      map.push(lastPos);
+      // Synthetic space between adjacent non-space runs; align to boundary before this run.
+      map.push(pos);
       lastWasSpace = true;
     }
 
     for (let i = 0; i < t.length; i++) {
       const ch = t[i]!;
       out += ch;
-      map.push(pos + 1 + i);
+      map.push(pos + i);
       lastWasSpace = /\s/.test(ch);
-      lastPos = pos + 1 + i;
     }
   });
 
   return { text: out, posByIndex: map };
+}
+
+function plainRangeToDocHighlight(
+  posByIndex: number[],
+  plainStart: number,
+  plainEndExclusive: number,
+  fallbackFrom: number
+): { startPos: number; endPos: number } | null {
+  if (!posByIndex.length || plainStart >= plainEndExclusive) return null;
+  const last = posByIndex.length - 1;
+  const i0 = Math.min(Math.max(0, plainStart), last);
+  const i1 = Math.min(Math.max(plainStart, plainEndExclusive - 1), last);
+  const startPos = posByIndex[i0] ?? fallbackFrom;
+  const endPos = (posByIndex[i1] ?? startPos) + 1;
+  if (endPos <= startPos) return null;
+  return { startPos, endPos };
 }
 
 /** Map browser selection inside the editor DOM to doc positions (works when PM state lags or blurs). */
@@ -77,10 +118,19 @@ function domSelectionToDocRange(view: EditorView, root: HTMLElement): { from: nu
   }
 }
 
-function ScrutinyPanel({ editor, expanded, onExpandedChange }: ScrutinyPanelProps) {
+function ScrutinyPanel({
+  editor,
+  expanded,
+  onExpandedChange,
+  trialMode = false,
+  onTrialConsume,
+  onTrialGated,
+}: ScrutinyPanelProps) {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ScrutinyResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Sidebar row for which the document highlight is shown (click-to-highlight only). */
+  const [activeSentenceKey, setActiveSentenceKey] = useState<string | null>(null);
   /**
    * Last non-empty doc selection. Cleared when the selection collapses so we never reuse
    * a stale range (e.g. after Select All + click to place the caret).
@@ -99,7 +149,22 @@ function ScrutinyPanel({ editor, expanded, onExpandedChange }: ScrutinyPanelProp
 
   useEffect(() => {
     if (!editor) return;
-    const dom = editor.view.dom as HTMLElement;
+    const root = safeGetEditorViewDom(editor);
+    if (!root) {
+      let raf: number | null = null;
+      const retry = () => {
+        if (!editor) return;
+        const next = safeGetEditorViewDom(editor);
+        if (!next) {
+          raf = requestAnimationFrame(retry);
+          return;
+        }
+      };
+      raf = requestAnimationFrame(retry);
+      return () => {
+        if (raf != null) cancelAnimationFrame(raf);
+      };
+    }
 
     const snapshotRangeLeavingEditor = () => {
       requestAnimationFrame(() => {
@@ -108,8 +173,8 @@ function ScrutinyPanel({ editor, expanded, onExpandedChange }: ScrutinyPanelProp
       });
     };
 
-    dom.addEventListener("pointerleave", snapshotRangeLeavingEditor);
-    dom.addEventListener("focusout", snapshotRangeLeavingEditor);
+    root.addEventListener("pointerleave", snapshotRangeLeavingEditor);
+    root.addEventListener("focusout", snapshotRangeLeavingEditor);
 
     const remember = () => {
       const { from, to } = editor.state.selection;
@@ -127,8 +192,8 @@ function ScrutinyPanel({ editor, expanded, onExpandedChange }: ScrutinyPanelProp
     editor.on("selectionUpdate", remember);
     editor.on("transaction", remember);
     return () => {
-      dom.removeEventListener("pointerleave", snapshotRangeLeavingEditor);
-      dom.removeEventListener("focusout", snapshotRangeLeavingEditor);
+      root.removeEventListener("pointerleave", snapshotRangeLeavingEditor);
+      root.removeEventListener("focusout", snapshotRangeLeavingEditor);
       editor.off("selectionUpdate", remember);
       editor.off("transaction", remember);
     };
@@ -136,8 +201,9 @@ function ScrutinyPanel({ editor, expanded, onExpandedChange }: ScrutinyPanelProp
 
   function resolveScanSelectionRange(): { from: number; to: number } | null {
     if (!editor) return null;
-    const view = editor.view;
-    const root = view.dom as HTMLElement;
+    const view = safeGetEditorView(editor);
+    const root = view ? safeGetEditorViewDom(editor) : null;
+    if (!view || !root) return null;
     const fromDom = domSelectionToDocRange(view, root);
     if (fromDom) return fromDom;
     const { from, to } = editor.state.selection;
@@ -161,10 +227,11 @@ function ScrutinyPanel({ editor, expanded, onExpandedChange }: ScrutinyPanelProp
     if (!editor || loading) return;
     setLoading(true);
     setError(null);
+    setActiveSentenceKey(null);
+    setScrutinyDecorations(editor, []);
     if (mode === "selection") {
       setResult(null);
       lastSelectionScanRangeRef.current = null;
-      setScrutinyDecorations(editor, []);
     }
     try {
       let from = 0;
@@ -191,7 +258,7 @@ function ScrutinyPanel({ editor, expanded, onExpandedChange }: ScrutinyPanelProp
         lastSelectionScanRangeRef.current = null;
       }
 
-      const { text, posByIndex } = extractPlainTextAndMap(editor, from, to);
+      const { text } = extractPlainTextAndMap(editor, from, to);
       if (mode === "selection" && !text.trim()) {
         lastSelectionScanRangeRef.current = null;
         setError("No text in that selection. Try again.");
@@ -209,26 +276,13 @@ function ScrutinyPanel({ editor, expanded, onExpandedChange }: ScrutinyPanelProp
 
       setResult(resp);
 
-      if (!resp.sentences.length) {
-        setScrutinyDecorations(editor, []);
-      } else {
-        const top = resp.sentences
-          .filter((s) => s.aiProbability >= resp.threshold)
-          .slice(0, 8);
-        const decos: Decoration[] = [];
-        for (const s of top) {
-          const startPos = posByIndex[s.start] ?? from;
-          const endPos = (posByIndex[Math.max(s.end - 1, 0)] ?? startPos) + 1;
-          if (endPos > startPos) {
-            decos.push(Decoration.inline(startPos, endPos, { class: "scrutiny-highlight" }));
-          }
-        }
-        setScrutinyDecorations(editor, decos);
-      }
+      // Highlights only after the user clicks a sentence in the list (not immediately after scan).
+      setScrutinyDecorations(editor, []);
     } catch (e) {
       lastSelectionScanRangeRef.current = null;
       setError("Scrutiny scan failed. Try again.");
       setResult(null);
+      setActiveSentenceKey(null);
       if (editor) setScrutinyDecorations(editor, []);
     } finally {
       setLoading(false);
@@ -238,7 +292,7 @@ function ScrutinyPanel({ editor, expanded, onExpandedChange }: ScrutinyPanelProp
   if (!editor) return null;
 
   return (
-    <div className="scrutiny-panel">
+    <div className="scrutiny-panel" data-onboard="scrutiny-panel">
       <div className="writing-pulse-panel-header">
         <h2 className="writing-pulse-panel-title">AI Scrutiny</h2>
         <button
@@ -246,26 +300,43 @@ function ScrutinyPanel({ editor, expanded, onExpandedChange }: ScrutinyPanelProp
           className="editor-orchestrator-collapse writing-pulse-panel-collapse"
           onClick={() => {
             onExpandedChange(false);
+            setActiveSentenceKey(null);
             if (editor) setScrutinyDecorations(editor, []);
           }}
           aria-expanded
           aria-label="Collapse AI Scrutiny"
           title="Hide AI Scrutiny"
+          data-onboard="scrutiny-collapse"
         >
           ‹
         </button>
       </div>
 
-          <div className="scrutiny-actions">
+          <div className="scrutiny-actions" data-onboard="scrutiny-actions">
             <button
               type="button"
               className="editor-orchestrator-btn"
+              data-onboard="scrutiny-scan-selection"
               onMouseDown={(e) => {
                 e.preventDefault();
                 if (!editor) return;
                 pendingScanSelectionRef.current = resolveScanSelectionRange();
               }}
-              onClick={() => void run("selection")}
+              onClick={() => {
+                if (trialMode && onTrialConsume) {
+                  const ok = onTrialConsume("scrutiny-selection");
+                  if (!ok) {
+                    onTrialGated?.("scrutiny-selection");
+                    return;
+                  }
+                }
+                try {
+                  window.dispatchEvent(new CustomEvent("im:scrutiny-scan-selection"));
+                } catch {
+                  /* ignore */
+                }
+                void run("selection");
+              }}
               disabled={loading}
               title="Analyze the text you selected in the document"
             >
@@ -274,8 +345,18 @@ function ScrutinyPanel({ editor, expanded, onExpandedChange }: ScrutinyPanelProp
             <button
               type="button"
               className="editor-orchestrator-btn"
+              data-onboard="scrutiny-scan-document"
               onMouseDown={(e) => e.preventDefault()}
-              onClick={() => void run("document")}
+              onClick={() => {
+                if (trialMode && onTrialConsume) {
+                  const ok = onTrialConsume("scrutiny-document");
+                  if (!ok) {
+                    onTrialGated?.("scrutiny-document");
+                    return;
+                  }
+                }
+                void run("document");
+              }}
               disabled={loading}
               title="Analyze the whole document"
             >
@@ -315,10 +396,13 @@ function ScrutinyPanel({ editor, expanded, onExpandedChange }: ScrutinyPanelProp
               {result.sentences.slice(0, 24).map((s, i) => {
                 const pct = Math.round(s.aiProbability * 100);
                 const level = pct >= 80 ? "high" : pct >= 60 ? "med" : "low";
+                const rowKey = `${s.start}-${s.end}-${i}`;
                 return (
                   <li
-                    key={`${s.start}-${s.end}-${i}`}
-                    className={`scrutiny-sentence scrutiny-sentence--${level}`}
+                    key={rowKey}
+                    className={`scrutiny-sentence scrutiny-sentence--${level}${
+                      activeSentenceKey === rowKey ? " scrutiny-sentence--active" : ""
+                    }`}
                     onClick={() => {
                       let baseFrom = 0;
                       let baseTo = editor.state.doc.content.size;
@@ -338,15 +422,18 @@ function ScrutinyPanel({ editor, expanded, onExpandedChange }: ScrutinyPanelProp
                         }
                       }
                       const { posByIndex } = extractPlainTextAndMap(editor, baseFrom, baseTo);
-                      const startPos = posByIndex[s.start] ?? baseFrom;
-                      const endPos = (posByIndex[Math.max(s.end - 1, 0)] ?? startPos) + 1;
-                      if (endPos > startPos) {
+                      const range = plainRangeToDocHighlight(posByIndex, s.start, s.end, baseFrom);
+                      if (range) {
+                        setActiveSentenceKey(rowKey);
                         setScrutinyDecorations(editor, [
-                          Decoration.inline(startPos, endPos, { class: "scrutiny-highlight" }),
+                          Decoration.inline(range.startPos, range.endPos, { class: "scrutiny-highlight" }),
                         ]);
+                      } else {
+                        setActiveSentenceKey(null);
+                        setScrutinyDecorations(editor, []);
                       }
                     }}
-                    title="Click to highlight this sentence"
+                    title="Click to highlight this sentence in the document"
                   >
                     <span className="scrutiny-sentence-text">{s.text}</span>
                     <span className="scrutiny-sentence-score">{pct}%</span>

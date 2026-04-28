@@ -7,6 +7,19 @@ interface GuideProps {
 
 function Guide({ isOpen, onClose }: GuideProps) {
   const modalRef = useRef<HTMLDivElement>(null);
+  const wasOpenRef = useRef(false);
+
+  // Emit events for onboarding tours.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const wasOpen = wasOpenRef.current;
+    wasOpenRef.current = isOpen;
+    if (!wasOpen && isOpen) {
+      window.dispatchEvent(new CustomEvent("im:guide-open"));
+    } else if (wasOpen && !isOpen) {
+      window.dispatchEvent(new CustomEvent("im:guide-close"));
+    }
+  }, [isOpen]);
 
   // Close on ESC
   useEffect(() => {

@@ -106,12 +106,20 @@ interface NeuralNetworkSceneProps {
    */
   edgeMode?: "global" | "cluster";
   onHoverNode: (id: string | null) => void;
+  onClickNode?: (id: string | null) => void;
   highlightNodeIds?: string[];
 }
 
 const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSceneProps>(
   function NeuralNetworkScene(
-    { nodes, positions: positionsProp, edgeMode = "global", onHoverNode, highlightNodeIds },
+    {
+      nodes,
+      positions: positionsProp,
+      edgeMode = "global",
+      onHoverNode,
+      onClickNode,
+      highlightNodeIds,
+    },
     ref
   ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -517,6 +525,8 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
       const hits = raycaster.intersectObjects(spheres, false);
       const hit = hits[0];
       if (hit?.object instanceof THREE.Mesh && meshToId.has(hit.object)) {
+        const clickedId = meshToId.get(hit.object) ?? null;
+        onClickNode?.(clickedId);
         const nodePos = hit.object.position.clone();
         const dir = new THREE.Vector3().subVectors(camera.position, nodePos).normalize();
         flyStart = camera.position.clone();
@@ -524,6 +534,8 @@ const NeuralNetworkScene = forwardRef<NeuralNetworkSceneHandle, NeuralNetworkSce
         flyStartLook = controls.target.clone();
         flyTargetLook = nodePos.clone();
         flyProgress = 0;
+      } else {
+        onClickNode?.(null);
       }
     };
 

@@ -1,4 +1,5 @@
 import { supabase } from "./supabase";
+import { requireUserId } from "./auth";
 
 export const AGENT_ARCHETYPES = [
   "Specialist",
@@ -34,6 +35,9 @@ export interface AgentMeta {
   identity: string;
   behavior: string;
   constraints: string;
+  userId?: string | null;
+  isTemplate?: boolean;
+  sourceTemplateId?: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -48,6 +52,9 @@ interface DbAgent {
   identity: string;
   behavior: string;
   constraints: string;
+  user_id?: string | null;
+  is_template?: boolean | null;
+  source_template_id?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -63,6 +70,9 @@ function toAgentMeta(a: DbAgent): AgentMeta {
     identity: a.identity ?? "",
     behavior: a.behavior ?? "",
     constraints: a.constraints ?? "",
+    userId: a.user_id ?? null,
+    isTemplate: Boolean(a.is_template),
+    sourceTemplateId: a.source_template_id ?? null,
     createdAt: new Date(a.createdAt).getTime(),
     updatedAt: new Date(a.updatedAt).getTime(),
   };
@@ -77,15 +87,101 @@ function buildDefaultPrompt(identity: string, behavior: string, constraints: str
 }
 
 export async function listAgents(): Promise<AgentMeta[]> {
+  const userId = await requireUserId();
   const { data, error } = await supabase
     .from("monkey_agents")
     .select("*")
+    .or(`is_template.eq.true,user_id.eq.${userId}`)
     .order("updatedAt", { ascending: false });
   if (error) throw new Error(error.message);
   return (data as DbAgent[]).map(toAgentMeta);
 }
 
+// These are the 3 core monkeys that every new user sees in Drive.
+// Must match the template row names in `supabase/seed-agents.sql`.
+const BAKED_IN_NAMES = ["Pathos Monkey", "Logic Monkey", "Synonym Sensei"] as const;
+
+export function isBakedInAgentName(name: string): boolean {
+  return BAKED_IN_NAMES.includes(name.trim() as any);
+}
+
+/** Drive should show only baked-ins + user-owned agents (saved copies). */
+export async function listDriveAgents(): Promise<AgentMeta[]> {
+  const userId = await requireUserId();
+  const [{ data: templates, error: templateErr }, { data: owned, error: ownedErr }] =
+    await Promise.all([
+      supabase
+        .from("monkey_agents")
+        .select("*")
+        .eq("is_template", true)
+        .is("user_id", null)
+        .in("name", [...BAKED_IN_NAMES])
+        .order("updatedAt", { ascending: false }),
+      supabase
+        .from("monkey_agents")
+        .select("*")
+        .eq("user_id", userId)
+        .order("updatedAt", { ascending: false }),
+    ]);
+  if (templateErr) throw new Error(templateErr.message);
+  if (ownedErr) throw new Error(ownedErr.message);
+  const all = [...((templates ?? []) as DbAgent[]), ...((owned ?? []) as DbAgent[])].map(toAgentMeta);
+  // Dedupe by id (shouldn't collide, but safe).
+  const seen = new Set<string>();
+  return all.filter((a) => (seen.has(a.id) ? false : (seen.add(a.id), true)));
+}
+
+/** Neural net should show templates only (including core baked-ins). */
+export async function listNetworkAgents(): Promise<AgentMeta[]> {
+  await requireUserId();
+  const { data, error } = await supabase
+    .from("monkey_agents")
+    .select("*")
+    .eq("is_template", true)
+    .is("user_id", null)
+    .order("updatedAt", { ascending: false });
+  if (error) throw new Error(error.message);
+  return (data as DbAgent[]).map(toAgentMeta);
+}
+
+/** Save/unlock a network agent into Drive by creating a user-owned copy. */
+export async function saveAgentFromNetwork(templateId: string): Promise<AgentMeta> {
+  const userId = await requireUserId();
+  const template = await getAgent(templateId);
+  if (!template) throw new Error("Template agent not found.");
+  // If the user already saved a copy of this template, reuse it.
+  const { data: existing, error: existingErr } = await supabase
+    .from("monkey_agents")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("source_template_id", templateId)
+    .limit(1);
+  if (existingErr) throw new Error(existingErr.message);
+  if (existing && existing.length > 0) return toAgentMeta(existing[0] as DbAgent);
+
+  const { data, error } = await supabase
+    .from("monkey_agents")
+    .insert({
+      user_id: userId,
+      is_template: false,
+      source_template_id: templateId,
+      name: template.name,
+      role: template.role,
+      strengths: template.strengths ?? "",
+      avatar: template.avatar ?? null,
+      defaultPrompt: template.defaultPrompt ?? "",
+      identity: template.identity ?? "",
+      behavior: template.behavior ?? "",
+      constraints: template.constraints ?? "",
+    })
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return toAgentMeta(data as DbAgent);
+}
+
 export async function getAgent(id: string): Promise<AgentMeta | null> {
+  await requireUserId();
   const { data, error } = await supabase
     .from("monkey_agents")
     .select("*")
@@ -102,9 +198,12 @@ export async function createAgent(partial?: {
   defaultPrompt?: string;
   avatar?: string;
 }): Promise<AgentMeta> {
+  const userId = await requireUserId();
   const { data, error } = await supabase
     .from("monkey_agents")
     .insert({
+      user_id: userId,
+      is_template: false,
       name: partial?.name?.trim() || "New monkey",
       role: partial?.role ?? "Specialist",
       strengths: partial?.strengths ?? "",
@@ -124,6 +223,7 @@ export async function updateAgent(
   id: string,
   updates: Partial<Omit<AgentMeta, "id" | "createdAt">>
 ): Promise<void> {
+  const userId = await requireUserId();
   const body: Record<string, unknown> = {};
   if (updates.name !== undefined) body.name = updates.name;
   if (updates.role !== undefined) body.role = updates.role;
@@ -151,12 +251,18 @@ export async function updateAgent(
   const { error } = await supabase
     .from("monkey_agents")
     .update(body)
-    .eq("id", id);
+    .eq("id", id)
+    .eq("user_id", userId);
   if (error) throw new Error(error.message);
 }
 
 export async function deleteAgent(id: string): Promise<void> {
-  const { error } = await supabase.from("monkey_agents").delete().eq("id", id);
+  const userId = await requireUserId();
+  const { error } = await supabase
+    .from("monkey_agents")
+    .delete()
+    .eq("id", id)
+    .eq("user_id", userId);
   if (error) throw new Error(error.message);
 }
 

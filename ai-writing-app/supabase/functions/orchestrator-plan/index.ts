@@ -1,5 +1,6 @@
 import { corsHeaders, corsPreflightResponse } from "../_shared/cors.ts";
 import { generateText, type LlmProviderMode } from "../_shared/llm.ts";
+import { getAuthedUser, isAuthedError, jsonError } from "../_shared/jwtUser.ts";
 import { parseJsonBody } from "../_shared/request.ts";
 import { sanitizeRewriteOutput } from "../_shared/sanitize.ts";
 import { createServiceClient } from "../_shared/supabase.ts";
@@ -7,7 +8,18 @@ import { createServiceClient } from "../_shared/supabase.ts";
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return corsPreflightResponse();
 
+  const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+  const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+  if (!supabaseUrl || !supabaseAnonKey) {
+    return jsonError("Server misconfiguration", 500);
+  }
+
   try {
+    const userResult = await getAuthedUser(req, supabaseUrl, supabaseAnonKey);
+    if (isAuthedError(userResult)) {
+      return jsonError(userResult.error, userResult.status);
+    }
+
     const { body, error: parseErr } = await parseJsonBody(req);
     if (parseErr) return parseErr;
 
@@ -33,6 +45,8 @@ Deno.serve(async (req) => {
     const { data: candidates, error: dbErr } = await supabase
       .from("monkey_agents")
       .select("id, name, role, strengths, identity, behavior, constraints")
+      .eq("is_template", true)
+      .is("user_id", null)
       .in("role", ["Specialist", "Synonym Specialist"])
       .order("updatedAt", { ascending: false });
 
