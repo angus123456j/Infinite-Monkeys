@@ -4,3 +4,9 @@ dist
 .env
 .env.*
 .DS_Store
+
+# Cursor agent debug logs (local only)
+.cursor/debug*.log
+
+# Supabase CLI cache at repo root (project lives under ai-writing-app/supabase)
+supabase/.temp/
