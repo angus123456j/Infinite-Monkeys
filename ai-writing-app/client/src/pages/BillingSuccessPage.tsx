@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { getMySubscription, type SubscriptionTier } from "../lib/subscriptions";
 
 function tierLabel(t: SubscriptionTier | null): string {
@@ -10,8 +10,7 @@ function tierLabel(t: SubscriptionTier | null): string {
 
 export default function BillingSuccessPage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  // session_id is only used by Stripe for debugging; don't show it in the launch UX.
+  // Stripe may append ?session_id=… to the return URL; we poll Supabase for tier instead of reading it.
   const [tier, setTier] = useState<SubscriptionTier | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [polling, setPolling] = useState(true);
