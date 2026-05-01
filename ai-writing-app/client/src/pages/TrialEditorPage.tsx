@@ -1,29 +1,12 @@
 import { Link, useLocation } from "react-router-dom";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import Editor from "../components/Editor";
 import EditorContext from "../contexts/EditorContext";
 import type { Editor as TiptapEditor } from "@tiptap/react";
 import TrialOnboardingTour from "../components/TrialOnboardingTour";
 import RouteErrorBoundary from "../components/RouteErrorBoundary";
-
-type TrialAction = "rewrite" | "scrutiny-selection" | "scrutiny-document";
-
-const TRIAL_USAGE_LS_KEY = "im-trial-usage-v1";
-
-function readTrialUsage(): Record<TrialAction, number> {
-  try {
-    const raw = localStorage.getItem(TRIAL_USAGE_LS_KEY);
-    if (!raw) return { rewrite: 0, "scrutiny-selection": 0, "scrutiny-document": 0 };
-    const parsed = JSON.parse(raw);
-    return {
-      rewrite: Number(parsed?.rewrite ?? 0) || 0,
-      "scrutiny-selection": Number(parsed?.["scrutiny-selection"] ?? 0) || 0,
-      "scrutiny-document": Number(parsed?.["scrutiny-document"] ?? 0) || 0,
-    };
-  } catch {
-    return { rewrite: 0, "scrutiny-selection": 0, "scrutiny-document": 0 };
-  }
-}
+import { supabase } from "../lib/supabase";
+import { shortcut } from "../lib/shortcuts";
 
 function TrialOverModal({
   open,
@@ -86,7 +69,8 @@ function TrialOverModal({
           </button>
         </div>
         <div style={{ fontSize: 16, lineHeight: 1.35, opacity: 0.92, color: "rgba(6, 18, 33, 0.92)" }}>
-          Sign up to continue using Rewrite and the AI side panels.
+          Sign up to continue using Rewrite and the AI side panels. Trial limits are enforced on the
+          server (about 3 rewrites and 1 AI scan per ~5 hours while you explore without an account).
         </div>
         <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}>
           <Link
@@ -116,51 +100,11 @@ function TrialOverModal({
 export default function TrialEditorPage() {
   const [editor, setEditor] = useState<TiptapEditor | null>(null);
   const location = useLocation();
-  const autoIntro = (location.state as any)?.autoIntro === true;
+  const autoIntro = (location.state as { autoIntro?: boolean } | null)?.autoIntro === true;
   const [uiPrimed, setUiPrimed] = useState(false);
+  const [anonReady, setAnonReady] = useState(false);
   const [paywallOpen, setPaywallOpen] = useState(false);
 
-  const trialLimits = useMemo(
-    () => ({
-      rewrite: 3,
-      "scrutiny-selection": 2,
-      // Keep the strongest/most expensive action as a signup moment.
-      "scrutiny-document": 0,
-    }),
-    []
-  );
-
-  const [trialUsage, setTrialUsage] = useState<Record<TrialAction, number>>(() => readTrialUsage());
-  const trialUsageRef = useRef(trialUsage);
-  useEffect(() => {
-    trialUsageRef.current = trialUsage;
-    try {
-      localStorage.setItem(TRIAL_USAGE_LS_KEY, JSON.stringify(trialUsage));
-    } catch {
-      /* ignore */
-    }
-  }, [trialUsage]);
-
-  const onTrialGated = useCallback((_action: TrialAction) => {
-    setPaywallOpen(true);
-  }, []);
-
-  const onTrialConsume = useCallback(
-    (action: TrialAction) => {
-      const cur = trialUsageRef.current;
-      const limit = trialLimits[action];
-      const used = cur[action] ?? 0;
-      if (used >= limit) return false;
-      const next = { ...cur, [action]: used + 1 };
-      trialUsageRef.current = next;
-      setTrialUsage(next);
-      return true;
-    },
-    [trialLimits]
-  );
-
-  // For the free trial (especially when starting the tour), begin with all side panels collapsed.
-  // We do this before mounting the Editor so its initial state reads the collapsed flags.
   useLayoutEffect(() => {
     try {
       localStorage.setItem("im-orchestrator-expanded", "false");
@@ -173,6 +117,41 @@ export default function TrialEditorPage() {
     setUiPrimed(true);
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        if (cancelled) return;
+        if (session?.user) {
+          setAnonReady(true);
+          return;
+        }
+        const { error } = await supabase.auth.signInAnonymously();
+        if (cancelled) return;
+        if (error) {
+          console.warn("[trial] signInAnonymously failed:", error.message);
+        }
+        setAnonReady(true);
+      } catch (e) {
+        console.warn("[trial] session bootstrap failed:", e);
+        if (!cancelled) setAnonReady(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const onTrialGated = useCallback(
+    (_action: "rewrite" | "scrutiny-selection" | "scrutiny-document") => {
+      setPaywallOpen(true);
+    },
+    [],
+  );
+
   return (
     <RouteErrorBoundary label="Free trial">
       <EditorContext.Provider value={editor}>
@@ -181,6 +160,7 @@ export default function TrialEditorPage() {
           <TrialOnboardingTour
             startMode={autoIntro ? "immediate" : "after-interaction"}
             forceOpen={autoIntro}
+            targetsReady={uiPrimed && anonReady}
           />
           <div className="title-bar im-trial-titlebar">
             <Link to="/?skipIntro=1" className="doc-icon-link" title="Back to home">
@@ -198,20 +178,19 @@ export default function TrialEditorPage() {
             </div>
           </div>
 
-          {uiPrimed ? (
+          {uiPrimed && anonReady ? (
             <Editor
               initialContent={`<p><strong>Welcome.</strong> This is a free trial document — nothing here is saved.</p>
-<p>Try rewriting: highlight the paragraph below, then press <strong>Command K</strong>.</p>
+<p>Try rewriting: highlight the paragraph below, then press <strong>${shortcut("K")}</strong>.</p>
 <p>Over time, these aquatic beings develop from specks that are barely visible into creatures that can reach up to two inches in length. They flourish in small, artificial habitats, needing little more than water and an occasional meal. Their resilience and low‑maintenance way of life offer us a fascinating glimpse into the survival strategies of life here on Earth.</p>
 <p><em>Playground prompts:</em> “make this more vivid”, “cut 30%”, “make it sound like a documentary narrator”, “simplify for a 12‑year‑old”.</p>
 <p></p>`}
-              // Critical: omit docId + timelineDocumentId so nothing persists to Supabase.
               docId={undefined}
               timelineDocumentId={undefined}
               onSaveContent={undefined}
               onEditorReady={setEditor}
               trialMode
-              onTrialConsume={onTrialConsume}
+              trialSkipClientQuota
               onTrialGated={onTrialGated}
             />
           ) : null}
@@ -220,4 +199,3 @@ export default function TrialEditorPage() {
     </RouteErrorBoundary>
   );
 }
-

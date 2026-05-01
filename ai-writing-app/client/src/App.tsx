@@ -13,6 +13,8 @@ import ResetPasswordPage from "./pages/ResetPasswordPage";
 import LoginPage from "./pages/LoginPage.tsx";
 import GuidePage from "./pages/GuidePage";
 import TrialEditorPage from "./pages/TrialEditorPage.tsx";
+import PricingPage from "./pages/PricingPage";
+import BillingSuccessPage from "./pages/BillingSuccessPage";
 
 function App() {
   return (
@@ -28,6 +30,8 @@ function App() {
         <Route path="/drive" element={<DocsPage />} />
         <Route path="/docs" element={<DocsPage />} />
         <Route path="/guide" element={<GuidePage />} />
+        <Route path="/pricing" element={<PricingPage />} />
+        <Route path="/billing/success" element={<BillingSuccessPage />} />
         <Route path="/doc/:id" element={<EditorPage />} />
         <Route path="/trial" element={<TrialEditorPage />} />
         <Route path="/context/:id" element={<ContextEditorPage />} />

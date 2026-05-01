@@ -2,12 +2,19 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 
-const driveUrl = () => `${window.location.origin}/drive`;
+function postConfirmPath(searchParams: URLSearchParams): string {
+  const plan = searchParams.get("plan");
+  if (plan === "pro" || plan === "infinite") {
+    return `/signup/free?plan=${plan}`;
+  }
+  return "/drive";
+}
 
 export default function ConfirmEmailPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const email = searchParams.get("email")?.trim() || "";
+  const nextPath = postConfirmPath(searchParams);
 
   const [resendLoading, setResendLoading] = useState(false);
   const [resendMessage, setResendMessage] = useState<string | null>(null);
@@ -16,16 +23,16 @@ export default function ConfirmEmailPage() {
     let mounted = true;
     supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
-      if (data.session) navigate("/drive", { replace: true });
+      if (data.session) navigate(nextPath, { replace: true });
     });
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session) navigate("/drive", { replace: true });
+      if (session) navigate(nextPath, { replace: true });
     });
     return () => {
       mounted = false;
       sub.subscription.unsubscribe();
     };
-  }, [navigate]);
+  }, [navigate, nextPath]);
 
   const onResend = useCallback(async () => {
     if (!email) {
@@ -37,7 +44,7 @@ export default function ConfirmEmailPage() {
     const { error } = await supabase.auth.resend({
       type: "signup",
       email,
-      options: { emailRedirectTo: driveUrl() },
+      options: { emailRedirectTo: `${window.location.origin}${nextPath}` },
     });
     setResendLoading(false);
     if (error) {
@@ -66,8 +73,15 @@ export default function ConfirmEmailPage() {
                   to <strong style={{ fontWeight: 600 }}>{email}</strong>
                 </>
               ) : null}
-              . Open the email and use the confirmation link—you’ll be signed in and taken straight to
-              the Drive. You can close this tab until then.
+              . Open the email and use the confirmation link—you’ll be signed in and{" "}
+              {searchParams.get("plan") === "pro" || searchParams.get("plan") === "infinite" ? (
+                <>
+                  taken to Stripe checkout for <strong>{searchParams.get("plan")}</strong>
+                </>
+              ) : (
+                <>taken straight to the Drive</>
+              )}
+              . You can close this tab until then.
             </p>
             {email ? (
               <p className="signup-auth__fine" style={{ margin: "0 0 1rem" }}>
@@ -97,7 +111,14 @@ export default function ConfirmEmailPage() {
               </Link>
               <span className="signup-auth__footer-muted">
                 Wrong email?{" "}
-                <Link to="/signup/free" className="signup-auth__footer-link signup-auth__footer-link--inline">
+                <Link
+                  to={
+                    searchParams.get("plan") === "pro" || searchParams.get("plan") === "infinite"
+                      ? `/signup/free?plan=${searchParams.get("plan")}`
+                      : "/signup/free"
+                  }
+                  className="signup-auth__footer-link signup-auth__footer-link--inline"
+                >
                   Sign up again →
                 </Link>
               </span>

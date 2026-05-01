@@ -102,7 +102,16 @@ export async function listAgents(): Promise<AgentMeta[]> {
 const BAKED_IN_NAMES = ["Pathos Monkey", "Logic Monkey", "Synonym Sensei"] as const;
 
 export function isBakedInAgentName(name: string): boolean {
-  return BAKED_IN_NAMES.includes(name.trim() as any);
+  const n = name.trim();
+  if (BAKED_IN_NAMES.includes(n as (typeof BAKED_IN_NAMES)[number])) return true;
+  const lower = n.toLowerCase();
+  if (lower.includes("synonym sensei") || lower.includes("synonym monkey")) return true;
+  return false;
+}
+
+/** User-owned monkeys created from scratch (Drive “New monkey”), not copies saved from templates. */
+export function countUserCustomMonkeys(agents: AgentMeta[]): number {
+  return agents.filter((a) => !a.isTemplate && !a.sourceTemplateId).length;
 }
 
 /** Drive should show only baked-ins + user-owned agents (saved copies). */
@@ -149,15 +158,17 @@ export async function saveAgentFromNetwork(templateId: string): Promise<AgentMet
   const userId = await requireUserId();
   const template = await getAgent(templateId);
   if (!template) throw new Error("Template agent not found.");
-  // If the user already saved a copy of this template, reuse it.
-  const { data: existing, error: existingErr } = await supabase
-    .from("monkey_agents")
-    .select("*")
-    .eq("user_id", userId)
-    .eq("source_template_id", templateId)
-    .limit(1);
-  if (existingErr) throw new Error(existingErr.message);
-  if (existing && existing.length > 0) return toAgentMeta(existing[0] as DbAgent);
+  const allowManyCopies = isBakedInAgentName(template.name);
+  if (!allowManyCopies) {
+    const { data: existing, error: existingErr } = await supabase
+      .from("monkey_agents")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("source_template_id", templateId)
+      .limit(1);
+    if (existingErr) throw new Error(existingErr.message);
+    if (existing && existing.length > 0) return toAgentMeta(existing[0] as DbAgent);
+  }
 
   const { data, error } = await supabase
     .from("monkey_agents")

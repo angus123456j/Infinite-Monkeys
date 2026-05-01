@@ -13,6 +13,7 @@ const SHORTCUTS: { category: string; keys: { keys: string; desc: string }[] }[] 
       { keys: "Ctrl+V", desc: "Paste" },
       { keys: "Ctrl+A", desc: "Select all" },
       { keys: "Ctrl+K", desc: "Open rewrite overlay (with selection)" },
+      { keys: "Ctrl+J", desc: "Expand selection (append new text below)" },
     ],
   },
   {

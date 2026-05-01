@@ -23,9 +23,6 @@ const MENU_OPTIONS: Record<MenuKey, MenuOption[]> = {
   Tools: [
     { label: "Spelling and grammar", action: "tools.spelling" },
     { label: "Word count", action: "tools.wordCount" },
-    { label: "Voice typing", action: "tools.voice" },
-    { label: "Translate document", action: "tools.translate" },
-    { label: "Preferences", action: "tools.prefs" },
   ],
 };
 

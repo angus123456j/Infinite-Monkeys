@@ -18,6 +18,13 @@ export const API_BASE = explicitApiUrl
 
 const SHARED_SECRET = (import.meta.env.VITE_SHARED_SECRET as string | undefined)?.trim();
 
+export class ScrutinyTrialQuotaError extends Error {
+  constructor() {
+    super("trial_quota_exceeded");
+    this.name = "ScrutinyTrialQuotaError";
+  }
+}
+
 const sendClientSecretHeader = Boolean(SHARED_SECRET) && !useDevProxy;
 
 export async function apiFetch<T>(
@@ -34,6 +41,17 @@ export async function apiFetch<T>(
     },
   });
   if (!res.ok) {
+    if (res.status === 402) {
+      let j: { error?: string } = {};
+      try {
+        j = (await res.clone().json()) as { error?: string };
+      } catch {
+        /* ignore */
+      }
+      if (j.error === "trial_quota_exceeded") {
+        throw new ScrutinyTrialQuotaError();
+      }
+    }
     const err = (await res.json().catch(() => ({}))) as {
       error?: string;
       details?: string;

@@ -21,6 +21,8 @@ export default function SuggestionBlockView(props: NodeViewProps) {
   const draftTextRef = useRef<string>(pinnedText);
 
   const onAccept = () => {
+    // Ensure any in-place edits are captured before applying.
+    commitDraftToNode();
     try {
       window.dispatchEvent(new CustomEvent("im:suggestion-accept", { detail: { rewriteId: attrs.rewriteId } }));
     } catch {
@@ -30,6 +32,8 @@ export default function SuggestionBlockView(props: NodeViewProps) {
     cb?.(attrs.rewriteId);
   };
   const onReject = () => {
+    // Persist edits so returning to the card keeps them.
+    commitDraftToNode();
     try {
       window.dispatchEvent(new CustomEvent("im:suggestion-reject", { detail: { rewriteId: attrs.rewriteId } }));
     } catch {
@@ -94,7 +98,7 @@ export default function SuggestionBlockView(props: NodeViewProps) {
       {isLoading ? (
         <div className="im-suggestion-node__body im-suggestion-node__body--loading">
           <span className="im-suggestion-node__spinner" aria-hidden />
-          <span>Rewriting…</span>
+          <span>{(attrs.title || "").toLowerCase().includes("expand") ? "Expanding…" : "Rewriting…"}</span>
         </div>
       ) : isError ? (
         <div className="im-suggestion-node__body im-suggestion-node__body--error">

@@ -1,7 +1,16 @@
 import { corsHeaders, corsPreflightResponse } from "../_shared/cors.ts";
 import { generateText, type LlmProviderMode } from "../_shared/llm.ts";
 import { getAuthedUser, isAuthedError, jsonError } from "../_shared/jwtUser.ts";
-import { parseJsonBody } from "../_shared/request.ts";
+import {
+  fieldTooLargeResponse,
+  MAX_BODY_BYTES_ORCHESTRATOR,
+  parseJsonBodyLimited,
+} from "../_shared/request.ts";
+import {
+  guardOrchestratorBursts,
+  MAX_ORCHESTRATOR_PROMPT_CHARS,
+  MAX_ORCHESTRATOR_TEXT_CHARS,
+} from "../_shared/rateLimit.ts";
 import { sanitizeRewriteOutput } from "../_shared/sanitize.ts";
 import { createServiceClient } from "../_shared/supabase.ts";
 
@@ -19,8 +28,9 @@ Deno.serve(async (req) => {
     if (isAuthedError(userResult)) {
       return jsonError(userResult.error, userResult.status);
     }
+    const userId = userResult.id;
 
-    const { body, error: parseErr } = await parseJsonBody(req);
+    const { body, error: parseErr } = await parseJsonBodyLimited(req, MAX_BODY_BYTES_ORCHESTRATOR);
     if (parseErr) return parseErr;
 
     const { text, prompt, llmProvider: rawLlm } = body;
@@ -31,6 +41,9 @@ Deno.serve(async (req) => {
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
+    if (text.length > MAX_ORCHESTRATOR_TEXT_CHARS) {
+      return fieldTooLargeResponse("text", MAX_ORCHESTRATOR_TEXT_CHARS);
+    }
 
     const llmProvider: LlmProviderMode =
       rawLlm === "gemini" || rawLlm === "deepseek" || rawLlm === "auto"
@@ -38,10 +51,31 @@ Deno.serve(async (req) => {
         : "auto";
 
     const instruction = typeof prompt === "string" ? prompt : "";
+    if (instruction.length > MAX_ORCHESTRATOR_PROMPT_CHARS) {
+      return fieldTooLargeResponse("prompt", MAX_ORCHESTRATOR_PROMPT_CHARS);
+    }
 
     console.log(`[orchestrator-plan] provider=${llmProvider} textLen=${text.length}`);
 
     const supabase = createServiceClient();
+
+    const { data: subRow } = await supabase
+      .from("subscriptions")
+      .select("tier")
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    const tier = (subRow as { tier?: string } | null)?.tier ?? "free";
+    if (tier === "free") {
+      return new Response(
+        JSON.stringify({ error: "quota_exceeded", type: "orchestrator" }),
+        { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const burst = await guardOrchestratorBursts(supabase, userId, req);
+    if (burst) return burst;
+
     const { data: candidates, error: dbErr } = await supabase
       .from("monkey_agents")
       .select("id, name, role, strengths, identity, behavior, constraints")

@@ -176,30 +176,34 @@
 
 .network-overlay-panel-head {
   display: flex;
-  align-items: flex-start;
+  align-items: baseline;
   justify-content: space-between;
   gap: 0.75rem;
 }
 
 .network-overlay-panel-close {
   pointer-events: auto;
-  border: 1px solid rgba(201, 168, 76, 0.35);
-  background: rgba(255, 255, 255, 0.55);
+  border: none;
+  background: transparent;
   color: #1b3a5c;
   font: inherit;
   cursor: pointer;
-  width: 34px;
-  height: 34px;
+  width: 22px;
+  height: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border-radius: 10px;
   flex: 0 0 auto;
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0.85;
+  transform: translateY(-2px);
 }
 
 .network-overlay-panel-close:hover {
-  background: rgba(248, 246, 241, 0.95);
-  border-color: rgba(201, 168, 76, 0.7);
+  background: rgba(201, 168, 76, 0.10);
+  opacity: 1;
 }
 
 .network-overlay-panel-actions {
@@ -209,32 +213,45 @@
   pointer-events: auto;
 }
 
+.network-overlay-panel-actions--top {
+  margin-top: 0.85rem;
+  margin-bottom: 1rem;
+}
+
 .network-overlay-panel-save {
   pointer-events: auto;
-  height: 40px;
-  padding: 0 0.9rem;
-  min-width: 200px;
+  height: 34px;
+  padding: 0 0.75rem;
+  min-width: 180px;
   font-family: "Cinzel", "Times New Roman", serif;
-  font-size: 0.78rem;
+  font-size: 0.68rem;
   font-weight: 600;
   color: #1b3a5c;
-  background: linear-gradient(180deg, rgba(248, 246, 241, 0.95), rgba(248, 246, 241, 0.75));
+  background: rgba(248, 246, 241, 0.82);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  border: 1.5px solid rgba(201, 168, 76, 0.55);
-  border-radius: 0px;
+  border: 1px solid rgba(201, 168, 76, 0.55);
+  border-radius: 10px;
   cursor: pointer;
-  letter-spacing: 0.04em;
-  transition: background 0.2s, border-color 0.2s;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  transition: background 0.18s, border-color 0.18s, transform 0.18s;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 8px 20px rgba(27, 58, 92, 0.08);
+  box-shadow: 0 10px 26px rgba(27, 58, 92, 0.08);
 }
 
 .network-overlay-panel-save:hover {
-  background: rgba(248, 246, 241, 0.95);
-  border-color: rgba(201, 168, 76, 0.7);
+  background: rgba(248, 246, 241, 0.92);
+  border-color: rgba(201, 168, 76, 0.78);
+  transform: translateY(-0.5px);
+}
+
+.network-overlay-panel-save:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .network-overlay-panel-title {

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { shortcut } from "../lib/shortcuts";
 
 interface GuideProps {
   isOpen: boolean;
@@ -57,32 +58,40 @@ function Guide({ isOpen, onClose }: GuideProps) {
 
         <div className="guide-body">
           <section className="guide-section">
-            <h3>1) Highlight text + Summon a monkey</h3>
+            <h3>1) Highlight text + Rewrite or Expand</h3>
             <ol>
               <li><strong>Select</strong> the text you want help with (it will highlight).</li>
-              <li>Press <kbd>Cmd+K</kbd> to open <strong>Summon Infinite Monkeys</strong>.</li>
-              <li>Type your instruction (e.g. “make it more formal”, “simplify this”, “translate to French”).</li>
-              <li>Press <kbd>Enter</kbd> or click <strong>Summon</strong>.</li>
+              <li>
+                Press <kbd>{shortcut("K")}</kbd> to open <strong>Rewrite with Infinite Monkeys</strong> (replaces the highlighted text).
+              </li>
+              <li>
+                Press <kbd>{shortcut("J")}</kbd> to open <strong>Expand with Infinite Monkeys</strong> (adds new sentences below the highlight).
+              </li>
+              <li>Type your instruction (e.g. “make it more formal”, “simplify this”, “add a few sentences”).</li>
+              <li>Press <kbd>Enter</kbd> or click <strong>Rewrite</strong> / <strong>Expand</strong>.</li>
             </ol>
             <ul>
               <li>You can keep writing while it runs in the background.</li>
-              <li>You can summon multiple times — select different text and press <kbd>Cmd+K</kbd> again.</li>
+              <li>
+                You can run it multiple times — select different text and press <kbd>{shortcut("K")}</kbd> or{" "}
+                <kbd>{shortcut("J")}</kbd> again.
+              </li>
             </ul>
           </section>
 
           <section className="guide-section">
             <h3>2) Move the Summon panel + write better prompts</h3>
             <ul>
-              <li>The Summon overlay is <strong>draggable</strong> — grab the title bar to move it anywhere.</li>
+              <li>The overlay is <strong>draggable</strong> — grab the title bar to move it anywhere.</li>
               <li>Press <kbd>Shift+Enter</kbd> for multi-line prompts.</li>
-              <li>Press <kbd>Esc</kbd> to close the overlay without summoning.</li>
+              <li>Press <kbd>Esc</kbd> to close the overlay without running anything.</li>
             </ul>
           </section>
 
           <section className="guide-section">
             <h3>3) (Optional) Attach Contexts</h3>
             <ul>
-              <li>In the Summon overlay, use <strong>Context</strong> to pick up to 5 items from your Context Library.</li>
+              <li>In the overlay, use <strong>Context</strong> to pick up to 5 items from your Context Library.</li>
               <li>Contexts are reusable memory: tone, rules, voice, bans, references — attach them when you want the rewrite “on brief”.</li>
             </ul>
           </section>

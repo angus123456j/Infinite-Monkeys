@@ -1,13 +1,19 @@
 import { prepare, layout } from "@chenglou/pretext";
 
-/** Matches [.editor-content .tiptap](client/src/index.css): 11pt Arial, line-height 1.15; use named fonts (not system-ui) per Pretext. */
+/** Matches [.editor-content .tiptap](client/src/index.css): 11pt Arial; line-height from user spacing; use named fonts (not system-ui) per Pretext. */
 export const EDITOR_TIPTAP_CANVAS_FONT = "11pt Arial, sans-serif";
 
 /** Inner width of the page text column: .pages-container width minus horizontal padding (96px * 2 from CSS). */
 export const EDITOR_REWRITE_TEXT_MAX_WIDTH_PX = 816 - 96 * 2;
 
-/** Matches [LINE_HEIGHT_PX](Editor.tsx) / .tiptap line box used for page math (each empty spacer `<p>` pushes ~this much). */
+/** Default body line box (11pt × 1.15) when `lineSpacing` is unknown — keep in sync with Editor layout. */
 export const EDITOR_REWRITE_LINE_HEIGHT_PX = 17;
+
+/** Pixel height of one body text line: 11pt Arial × `lineSpacing` (matches `.editor-content .tiptap`). */
+export function editorBodyLineHeightPx(lineSpacing: number): number {
+  const s = Number.isFinite(lineSpacing) ? lineSpacing : 1.15;
+  return Math.round((11 / 72) * 96 * Math.min(3, Math.max(1, s)));
+}
 
 /**
  * Inline suggestion (`.inline-suggestion`) uses line-height 1.4 — taller line boxes than body copy, so more vertical space than body `layout()` with 17px.
@@ -73,9 +79,13 @@ export function measureInlineSuggestionBlockHeightPx(text: string): number {
  * How many empty spacer paragraphs are needed so document flow reserves roughly the same vertical
  * space as the overlay (map pixel height → `.tiptap` line boxes).
  */
-export function targetSpacerParagraphCountForRewrite(rewriteText: string): number {
+export function targetSpacerParagraphCountForRewrite(
+  rewriteText: string,
+  bodyLineHeightPx: number = EDITOR_REWRITE_LINE_HEIGHT_PX
+): number {
   const blockPx = measureInlineSuggestionBlockHeightPx(rewriteText);
-  const lines = Math.ceil(blockPx / EDITOR_REWRITE_LINE_HEIGHT_PX);
+  const lh = bodyLineHeightPx > 0 ? bodyLineHeightPx : EDITOR_REWRITE_LINE_HEIGHT_PX;
+  const lines = Math.ceil(blockPx / lh);
   const withBuffer = lines + 8;
   return Math.min(MAX_SPACER_PARAGRAPHS, Math.max(1, withBuffer));
 }
@@ -87,14 +97,21 @@ export function targetSpacerParagraphCountForRewrite(rewriteText: string): numbe
 export function extraSpacerParagraphsNeeded(
   rewriteText: string,
   currentSpacerParagraphCount: number,
-  maxTotalLines: number = MAX_SPACER_PARAGRAPHS
+  maxTotalLines: number = MAX_SPACER_PARAGRAPHS,
+  bodyLineHeightPx: number = EDITOR_REWRITE_LINE_HEIGHT_PX
 ): number {
-  const target = Math.min(maxTotalLines, targetSpacerParagraphCountForRewrite(rewriteText));
+  const target = Math.min(
+    maxTotalLines,
+    targetSpacerParagraphCountForRewrite(rewriteText, bodyLineHeightPx)
+  );
   return Math.max(0, target - currentSpacerParagraphCount);
 }
 
 /** Upper bound for overlap-repair inserts so long rewrites can still nudge until the card clears. */
-export function maxOverlapRepairExtraParas(rewriteText: string): number {
-  const target = targetSpacerParagraphCountForRewrite(rewriteText);
+export function maxOverlapRepairExtraParas(
+  rewriteText: string,
+  bodyLineHeightPx: number = EDITOR_REWRITE_LINE_HEIGHT_PX
+): number {
+  const target = targetSpacerParagraphCountForRewrite(rewriteText, bodyLineHeightPx);
   return Math.min(MAX_SPACER_PARAGRAPHS, target + 48);
 }

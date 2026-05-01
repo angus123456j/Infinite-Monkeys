@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import type { Editor } from "@tiptap/react";
 import ColorPicker from "./ColorPicker";
 import Guide from "./Guide";
@@ -19,19 +19,61 @@ const FONT_FAMILIES = [
 /** Prevent toolbar buttons from stealing editor focus */
 const preventFocusLoss = (e: React.MouseEvent) => e.preventDefault();
 
+const SPACING_MATCH_EPS = 0.02;
+
+function formatLineSpacingTrigger(value: number): string {
+  const r = Math.round(value * 100) / 100;
+  if (Math.abs(r - 1) < SPACING_MATCH_EPS) return "1";
+  if (Math.abs(r - 1.5) < SPACING_MATCH_EPS) return "1.5";
+  if (Math.abs(r - 2) < SPACING_MATCH_EPS) return "double";
+  if (Number.isInteger(r)) return String(r);
+  const t = r.toFixed(2);
+  return t.replace(/0+$/, "").replace(/\.$/, "");
+}
+
 interface ToolbarProps {
   editor: Editor | null;
   llmProvider: "auto" | "gemini" | "deepseek";
   onLlmProviderChange: (value: "auto" | "gemini" | "deepseek") => void;
+  lineSpacing: number;
+  onLineSpacingChange: (value: number) => void;
 }
 
-function Toolbar({ editor, llmProvider, onLlmProviderChange }: ToolbarProps) {
+function Toolbar({
+  editor,
+  llmProvider,
+  onLlmProviderChange,
+  lineSpacing,
+  onLineSpacingChange,
+}: ToolbarProps) {
   const [editingFontSize, setEditingFontSize] = useState<string | null>(null);
   const [pendingFontSize, setPendingFontSize] = useState<number | null>(null);
   const [isGuideOpen, setIsGuideOpen] = useState(false);
+  const [spacingMenuOpen, setSpacingMenuOpen] = useState(false);
+  const [customSpacingDraft, setCustomSpacingDraft] = useState("");
+  const spacingMenuRef = useRef<HTMLDivElement>(null);
   const [theme, setTheme] = useState<"light" | "dark" | "forest" | "blue" | "pink">(() => {
     return (localStorage.getItem("theme") as "light" | "dark" | "forest" | "blue" | "pink") || "light";
   });
+
+  useEffect(() => {
+    if (!spacingMenuOpen) return;
+    function handlePointerDown(e: MouseEvent) {
+      if (spacingMenuRef.current && !spacingMenuRef.current.contains(e.target as Node)) {
+        setSpacingMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [spacingMenuOpen]);
+
+  const applyCustomSpacing = useCallback(() => {
+    const normalized = customSpacingDraft.trim().replace(",", ".");
+    const n = parseFloat(normalized);
+    if (!Number.isFinite(n)) return;
+    onLineSpacingChange(n);
+    setSpacingMenuOpen(false);
+  }, [customSpacingDraft, onLineSpacingChange]);
 
 
   useEffect(() => {
@@ -292,6 +334,103 @@ function Toolbar({ editor, llmProvider, onLlmProviderChange }: ToolbarProps) {
           <text x="1" y="20" fontSize="7.5" fontFamily="Arial" fontWeight="600">3.</text>
         </svg>
       </button>
+
+      <span className="toolbar-divider" />
+
+      <div className="toolbar-line-spacing" ref={spacingMenuRef}>
+        <button
+          type="button"
+          className="toolbar-spacing-trigger"
+          onMouseDown={preventFocusLoss}
+          onClick={() => {
+            setSpacingMenuOpen((o) => {
+              const next = !o;
+              if (next) setCustomSpacingDraft(String(lineSpacing));
+              return next;
+            });
+          }}
+          title="Line spacing — space between lines in the document"
+          aria-expanded={spacingMenuOpen}
+          aria-haspopup="true"
+        >
+          <span className="toolbar-line-spacing-label">spacing</span>
+          <span className="toolbar-spacing-trigger-value">{formatLineSpacingTrigger(lineSpacing)}</span>
+          <span className="toolbar-spacing-chevron" aria-hidden>
+            <svg width="10" height="10" viewBox="0 0 12 12" fill="currentColor">
+              <path d="M2 4l4 4 4-4H2z" />
+            </svg>
+          </span>
+        </button>
+        {spacingMenuOpen ? (
+          <div className="toolbar-spacing-dropdown" role="menu" aria-label="Line spacing options">
+            <button
+              type="button"
+              role="menuitem"
+              className={`toolbar-spacing-option${Math.abs(lineSpacing - 1) < SPACING_MATCH_EPS ? " is-active" : ""}`}
+              onMouseDown={preventFocusLoss}
+              onClick={() => {
+                onLineSpacingChange(1);
+                setSpacingMenuOpen(false);
+              }}
+            >
+              1
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className={`toolbar-spacing-option${Math.abs(lineSpacing - 1.5) < SPACING_MATCH_EPS ? " is-active" : ""}`}
+              onMouseDown={preventFocusLoss}
+              onClick={() => {
+                onLineSpacingChange(1.5);
+                setSpacingMenuOpen(false);
+              }}
+            >
+              1.5
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className={`toolbar-spacing-option${Math.abs(lineSpacing - 2) < SPACING_MATCH_EPS ? " is-active" : ""}`}
+              onMouseDown={preventFocusLoss}
+              onClick={() => {
+                onLineSpacingChange(2);
+                setSpacingMenuOpen(false);
+              }}
+            >
+              double
+            </button>
+            <div className="toolbar-spacing-dropdown-divider" role="presentation" />
+            <div className="toolbar-spacing-custom">
+              <span className="toolbar-spacing-custom-label">Custom</span>
+              <div className="toolbar-spacing-custom-row">
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  className="toolbar-spacing-custom-input"
+                  value={customSpacingDraft}
+                  onChange={(e) => setCustomSpacingDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      applyCustomSpacing();
+                    }
+                  }}
+                  placeholder="1–3"
+                  aria-label="Custom line spacing"
+                />
+                <button
+                  type="button"
+                  className="toolbar-spacing-custom-apply"
+                  onClick={applyCustomSpacing}
+                >
+                  Apply
+                </button>
+              </div>
+              <span className="toolbar-spacing-custom-hint">Between 1 and 3 (e.g. 1.25)</span>
+            </div>
+          </div>
+        ) : null}
+      </div>
 
       <div className="toolbar-spacer" />
 

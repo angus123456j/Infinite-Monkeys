@@ -7,6 +7,8 @@ import {
   type CSSProperties,
   type MouseEvent,
 } from "react";
+import { supabase } from "../lib/supabase";
+import { redirectToStripeCheckout } from "../lib/checkout";
 
 const TIERS = [
   {
@@ -114,6 +116,7 @@ function SignupTierPanel({ tier }: { tier: Tier }) {
   const allowTilt = finePointer && !reducedMotion;
   const [tilt, setTilt] = useState({ rx: 0, ry: 0 });
   const rafRef = useRef<number | null>(null);
+  const [paidLoading, setPaidLoading] = useState(false);
 
   const applyTilt = useCallback(
     (clientX: number, clientY: number) => {
@@ -234,12 +237,29 @@ function SignupTierPanel({ tier }: { tier: Tier }) {
         <button
           type="button"
           className="signup-glass__cta"
-          disabled={tier.id !== "free"}
+          disabled={paidLoading}
           onClick={() => {
-            if (tier.id === "free") navigate("/signup/free");
+            void (async () => {
+              if (tier.id === "free") {
+                navigate("/signup/free");
+                return;
+              }
+              const { data } = await supabase.auth.getSession();
+              if (!data.session) {
+                navigate(`/signup/free?plan=${tier.id}`);
+                return;
+              }
+              setPaidLoading(true);
+              try {
+                await redirectToStripeCheckout(tier.id);
+              } catch {
+                setPaidLoading(false);
+                navigate(`/signup/free?plan=${tier.id}`);
+              }
+            })();
           }}
         >
-          Choose plan
+          {paidLoading ? "Opening Stripe…" : "Choose plan"}
         </button>
 
         <p className="signup-glass__fine">{tier.footer}</p>
@@ -264,7 +284,7 @@ export default function SignUpPage() {
             <p className="signup-page__eyebrow">Sign up</p>
             <h1 className="signup-page__title">Choose a tier</h1>
             <p className="signup-page__lede">
-              One gold frame per plan—everything inside it, left-aligned navy type.
+              Pick a plan for rewrites, expansions, and your own monkey agents—then write in-place with context.
             </p>
           </div>
           <Link to="/?skipIntro=1" className="signup-page__back">

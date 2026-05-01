@@ -7,6 +7,7 @@ import {
   useLayoutEffect,
   useCallback,
   useMemo,
+  type CSSProperties,
   MouseEvent,
 } from "react";
 import StarterKit from "@tiptap/starter-kit";
@@ -41,6 +42,7 @@ import AgentInvocationTimeline, {
   type AgentInvocationLogEntry,
 } from "./AgentInvocationTimeline";
 import { joinForward } from "@tiptap/pm/commands";
+import { TextSelection } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
 import { Decoration } from "@tiptap/pm/view";
 import { getAgent, listAgents, type AgentMeta } from "../lib/agents";
@@ -48,7 +50,26 @@ import { listContexts } from "../lib/contexts";
 import { saveDoc } from "../lib/docs";
 import { extractSentenceContext } from "../lib/extractSentenceContext";
 import { supabase } from "../lib/supabase";
+import type { SubscriptionTier } from "../lib/subscriptions";
 import {
+  FREE_TIER_DAILY_SENTENCES,
+  dailyScrutinyLimitForTier,
+  dailySentenceLimitForTier,
+} from "../lib/freeTierLimits";
+import { readEdgeInvokeParsed } from "../lib/readFunctionInvokeError";
+import {
+  BurstRateLimitError,
+  PayloadTooLargeError,
+  QuotaExceededError,
+  TrialQuotaExceededError,
+  isBurstRateLimitError,
+  isPayloadTooLargeError,
+  isQuotaExceededError,
+  isTrialQuotaExceededError,
+} from "../lib/quotaErrors";
+import UpgradeModal from "./UpgradeModal";
+import {
+  editorBodyLineHeightPx,
   extraSpacerParagraphsNeeded,
   maxOverlapRepairExtraParas,
 } from "../lib/pretextRewriteLayout";
@@ -56,16 +77,30 @@ import { SuggestionBlock } from "../extensions/SuggestionBlock";
 
 const USE_INFLOW_SUGGESTIONS = true;
 
-/** Fixed 50 lines per page. Line height in px (11pt × 1.15 ≈ 17). */
+/** Fixed 50 lines per page (visual guide). Line box height follows toolbar line spacing. */
 const LINES_PER_PAGE = 50;
-const LINE_HEIGHT_PX = 17;
 /** Top/bottom margin per page in px (matches .tiptap padding). */
 const PAGE_MARGIN_PX = 72;
-/** Height of one page card: margin + 50 lines + margin */
-const PAGE_HEIGHT =
-  PAGE_MARGIN_PX + LINES_PER_PAGE * LINE_HEIGHT_PX + PAGE_MARGIN_PX;
 /** Gap between stacked page cards in px */
 const GAP_HEIGHT = 25;
+const LS_LINE_SPACING = "im-editor-line-spacing";
+
+function clampLineSpacing(n: number): number {
+  if (!Number.isFinite(n)) return 1.15;
+  return Math.min(3, Math.max(1, Math.round(n * 100) / 100));
+}
+
+function readLineSpacing(): number {
+  try {
+    const raw = localStorage.getItem(LS_LINE_SPACING);
+    if (raw == null || raw === "") return 1.15;
+    const v = parseFloat(raw);
+    if (!Number.isFinite(v)) return 1.15;
+    return clampLineSpacing(v);
+  } catch {
+    return 1.15;
+  }
+}
 /** Highlight color used for pending rewrites */
 const HIGHLIGHT_COLOR = "#ffcdd2";
 /**
@@ -287,6 +322,8 @@ interface PendingRewrite {
   parentId?: number;
   parentReplaceStart?: number;
   parentReplaceEnd?: number;
+  /** Root doc action: rewrite replaces; expand appends below selection. */
+  docAction?: "rewrite" | "expand";
   orchestratorMode?: "synthesis" | "sequential";
   orchestratorSteps?: Array<{ agentId: string; agentName: string; text: string }>;
   sentenceAttribution?: Array<{ sentence: string; agentName: string }>;
@@ -303,7 +340,12 @@ interface PendingRewrite {
   spacerTo: number;
 }
 
-type OverlayDocSelection = { kind: "doc"; from: number; to: number };
+type OverlayDocSelection = {
+  kind: "doc";
+  from: number;
+  to: number;
+  action: "rewrite" | "expand";
+};
 type OverlaySuggestionSelection = {
   kind: "suggestion";
   parentRewriteId: number;
@@ -336,6 +378,25 @@ function readStoredLlmProvider(): LlmProviderChoice {
   return "auto";
 }
 
+function findHighlightRange(doc: any, color: string): { from: number; to: number } | null {
+  let from: number | null = null;
+  let to: number | null = null;
+  doc.descendants((node: any, pos: number) => {
+    if (!node || !node.isText) return true;
+    const marks = node.marks ?? [];
+    const hit = marks.find(
+      (m: any) => m?.type?.name === "highlight" && (m?.attrs?.color ?? null) === color
+    );
+    if (!hit) return true;
+    // For text nodes, the text spans [pos, pos + node.nodeSize).
+    from = from == null ? pos : Math.min(from, pos);
+    to = to == null ? pos + node.nodeSize : Math.max(to, pos + node.nodeSize);
+    return true;
+  });
+  if (from == null || to == null || from >= to) return null;
+  return { from, to };
+}
+
 interface EditorProps {
   docId?: string;
   /** When set, monkey timeline is loaded/saved for this document (not used on context-only pages). */
@@ -349,6 +410,13 @@ interface EditorProps {
   collapseSidePanelsOnMount?: boolean;
   /** Trial mode: used to gate premium features and onboarding. */
   trialMode?: boolean;
+  /**
+   * With `trialMode`, when true, skip client-side trial counters; quotas are enforced on the server
+   * (anonymous Supabase session + edge / scrutiny service).
+   */
+  trialSkipClientQuota?: boolean;
+  /** When set (signed-in editor), used with `trialMode` for free-tier limits. Omit on trial page. */
+  subscriptionTier?: SubscriptionTier;
   onTrialConsume?: (action: "rewrite" | "scrutiny-selection" | "scrutiny-document") => boolean;
   onTrialGated?: (action: "rewrite" | "scrutiny-selection" | "scrutiny-document") => void;
   initialContent?: string;
@@ -363,6 +431,8 @@ function Editor({
   onSaveMonkeyTimeline,
   collapseSidePanelsOnMount = false,
   trialMode = false,
+  trialSkipClientQuota = false,
+  subscriptionTier,
   onTrialConsume,
   onTrialGated,
   initialContent = "<p></p>",
@@ -389,6 +459,34 @@ function Editor({
       setWritingPulseExpanded(false);
     }
   }, [trialMode, tourStepId]);
+
+  const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
+  const [upgradeReason, setUpgradeReason] = useState("");
+
+  const showUpgradeForQuotaType = useCallback(
+    (type: string, meta?: { used?: number; limit?: number }) => {
+      const tier = subscriptionTier ?? "free";
+      const fallbackSentenceLimit = dailySentenceLimitForTier(tier) ?? FREE_TIER_DAILY_SENTENCES;
+      const limit = meta?.limit ?? fallbackSentenceLimit;
+      const used = meta?.used;
+      if (type === "sentences") {
+        setUpgradeReason(
+          used != null
+            ? `You've used about ${used} of ${limit} assisted “sentences” on your plan for today (estimate from rewrite length; resets daily UTC). Upgrade for higher limits.`
+            : `You've reached your daily limit for assisted rewrites (${limit} sentence-equivalents, resets daily UTC). Upgrade to continue.`,
+        );
+      } else if (type === "orchestrator") {
+        setUpgradeReason(
+          "Orchestrator (multi-monkey chains) is not included on the free plan. Upgrade to unlock it.",
+        );
+      } else {
+        setUpgradeReason("This action requires a higher plan. See pricing for details.");
+      }
+      setUpgradeModalOpen(true);
+    },
+    [subscriptionTier],
+  );
+
   const acceptSuggestionRef = useRef<(rewriteId: number) => void>(() => {});
   const rejectSuggestionRef = useRef<(rewriteId: number) => void>(() => {});
 
@@ -416,8 +514,17 @@ function Editor({
   const pageRef = useRef<HTMLDivElement>(null);
   const editorPageAreaRef = useRef<HTMLDivElement>(null);
   const [pageCount, setPageCount] = useState(1);
-  const [containerMinHeight, setContainerMinHeight] = useState(PAGE_HEIGHT);
+  const [containerMinHeight, setContainerMinHeight] = useState(() => {
+    const lh = editorBodyLineHeightPx(readLineSpacing());
+    return PAGE_MARGIN_PX + LINES_PER_PAGE * lh + PAGE_MARGIN_PX;
+  });
   const [contentVersion, setContentVersion] = useState(0);
+  const [lineSpacing, setLineSpacing] = useState(readLineSpacing);
+  const lineHeightPx = useMemo(() => editorBodyLineHeightPx(lineSpacing), [lineSpacing]);
+  const pageHeightPx = useMemo(
+    () => PAGE_MARGIN_PX + LINES_PER_PAGE * lineHeightPx + PAGE_MARGIN_PX,
+    [lineHeightPx]
+  );
   const [llmProvider, setLlmProvider] = useState<LlmProviderChoice>(() =>
     readStoredLlmProvider()
   );
@@ -500,7 +607,15 @@ function Editor({
     }
   }, [llmProvider]);
 
-  /** Position fixed Monkey timeline + rail tabs with the page card; update on layout only (not document scroll). */
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_LINE_SPACING, String(lineSpacing));
+    } catch {
+      /* ignore */
+    }
+  }, [lineSpacing]);
+
+  /** Fixed Monkey timeline + rail tabs: set --agent-invocation-timeline-top from a scroll-invariant anchor so they do not move when the document scrolls. */
   useLayoutEffect(() => {
     const el = pageRef.current;
     const scrollArea = editorPageAreaRef.current;
@@ -510,10 +625,11 @@ function Editor({
       const scrollRect = scrollArea?.getBoundingClientRect();
       const pageRect = el.getBoundingClientRect();
       const minTop = scrollRect?.top ?? 0;
-      // Align with the document page card top (like the initial layout), but clamp so we never
-      // sit above the editor pane. Do not tie this to scroll — only layout/resize — so fixed
-      // timeline + rail tabs stay visually stuck while the document scrolls.
-      const timelineTop = Math.max(minTop, pageRect.top);
+      const scrollTop = scrollArea?.scrollTop ?? 0;
+      // `pageRect.top` moves with document scroll inside the pane; add `scrollTop` so the sum is
+      // stable (paper position in document space). Fixed rail tabs + timeline then stay put.
+      const paperAnchorViewportTop = pageRect.top + scrollTop;
+      const timelineTop = Math.max(minTop, paperAnchorViewportTop);
       document.documentElement.style.setProperty(
         "--agent-invocation-timeline-top",
         `${timelineTop}px`
@@ -952,8 +1068,8 @@ function Editor({
 
       // Ignore clicks that land inside a gray inter-page gap
       for (let i = 1; i < pageCount; i++) {
-        const gapTop = i * (PAGE_HEIGHT + GAP_HEIGHT) - GAP_HEIGHT;
-        const gapBottom = i * (PAGE_HEIGHT + GAP_HEIGHT);
+        const gapTop = i * (pageHeightPx + GAP_HEIGHT) - GAP_HEIGHT;
+        const gapBottom = i * (pageHeightPx + GAP_HEIGHT);
         if (containerY >= gapTop && containerY < gapBottom) return;
       }
 
@@ -974,7 +1090,7 @@ function Editor({
       if (e.clientY <= lastChildRect.bottom + 5) return;
       return;
     },
-    [editor, pageCount]
+    [editor, pageCount, pageHeightPx]
   );
 
   const updatePageCount = useCallback(() => {
@@ -988,11 +1104,11 @@ function Editor({
     const contentHeight = tiptapEl.scrollHeight;
     setContainerMinHeight(contentHeight);
     const contentPages = Math.ceil(
-      (contentHeight + GAP_HEIGHT) / (PAGE_HEIGHT + GAP_HEIGHT)
+      (contentHeight + GAP_HEIGHT) / (pageHeightPx + GAP_HEIGHT)
     );
     const newPageCount = Math.max(1, contentPages);
     setPageCount(newPageCount);
-  }, [editor]);
+  }, [pageHeightPx]);
 
   // Watch for content changes so the scrollable area grows with the document.
   useEffect(() => {
@@ -1128,9 +1244,9 @@ function Editor({
           rw.rewriteText ??
           rw.originalText ??
           "";
-        const MAX_EXTRA_PARAS = maxOverlapRepairExtraParas(rewriteForMeasure);
+        const MAX_EXTRA_PARAS = maxOverlapRepairExtraParas(rewriteForMeasure, lineHeightPx);
         /** Conservative: assume each new empty `<p>` adds ~this much flow height after min-height CSS. */
-        const pixelsPerPara = LINE_HEIGHT_PX;
+        const pixelsPerPara = lineHeightPx;
 
         /** Pixels of clearance required between card bottom and top of following doc content. */
         const CARD_CLEARANCE_PX = 44;
@@ -1140,7 +1256,7 @@ function Editor({
          * Tie minimum spacer *count* to measured card height (includes Accept/Reject).
          * Converts a shortfall into px so overlap repair inserts enough rows even if coords lag.
          */
-        const CARD_PARA_SLOT_PX = LINE_HEIGHT_PX;
+        const CARD_PARA_SLOT_PX = lineHeightPx;
         const CARD_PARA_EXTRA_RESERVE_PX = 136;
 
         let rwSpacersChanged = false;
@@ -1263,7 +1379,7 @@ function Editor({
       if (frameId !== null) cancelAnimationFrame(frameId);
       observers.forEach((obs) => obs.disconnect());
     };
-  }, [editor, pendingRewrites, suggestionPositions]);
+  }, [editor, pendingRewrites, suggestionPositions, lineHeightPx]);
 
   // Re-check overlap when the doc or caret moves — ResizeObserver only sees card size.
   useEffect(() => {
@@ -1430,7 +1546,9 @@ function Editor({
                 (currentRef.spacerTo - currentRef.spacerFrom) / 2;
               const extraNeeded = extraSpacerParagraphsNeeded(
                 rw.rewriteText,
-                currentSpacers
+                currentSpacers,
+                undefined,
+                lineHeightPx
               );
 
               if (extraNeeded > 0) {
@@ -1500,7 +1618,7 @@ function Editor({
         revealTimersRef.current[rw.id] = timer;
       }
     }
-  }, [pendingRewrites, editor]);
+  }, [pendingRewrites, editor, lineHeightPx]);
 
   // Clean up all reveal timers on unmount
   useEffect(() => {
@@ -1515,7 +1633,13 @@ function Editor({
     if (!editor) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        (e.key === "k" || e.key === "j")
+      ) {
+        const action: OverlayDocSelection["action"] =
+          e.key === "j" ? "expand" : "rewrite";
+
         const domSel = window.getSelection();
         if (domSel && !domSel.isCollapsed && domSel.rangeCount > 0) {
           const range = domSel.getRangeAt(0);
@@ -1527,6 +1651,8 @@ function Editor({
             ".inline-suggestion-content"
           ) as HTMLElement | null;
           if (contentHost) {
+            // Cmd/Ctrl+E is only supported for document selections (not within suggestion cards).
+            if (action === "expand") return;
             e.preventDefault();
             const card = contentHost.closest("[data-rewrite-id]");
             const rwIdAttr = card?.getAttribute("data-rewrite-id");
@@ -1582,7 +1708,7 @@ function Editor({
           .setHighlight({ color: HIGHLIGHT_COLOR })
           .run();
 
-        setStoredSelection({ kind: "doc", from, to });
+        setStoredSelection({ kind: "doc", from, to, action });
         setIsOverlayOpen(true);
         setPrompt("");
       }
@@ -1639,7 +1765,29 @@ function Editor({
       const { data, error } = await supabase.functions.invoke("rewrite", {
         body: payload,
       });
-      if (error) throw error;
+      if (error) {
+        const p = await readEdgeInvokeParsed(error, data);
+        if (p?.kind === "quota_exceeded") {
+          throw new QuotaExceededError(p.type ?? "sentences", {
+            used: p.used,
+            limit: p.limit,
+          });
+        }
+        if (p?.kind === "trial_quota_exceeded") {
+          throw new TrialQuotaExceededError(p.type === "scrutiny" ? "scrutiny" : "rewrite");
+        }
+        if (p?.kind === "rate_limit") {
+          throw new BurstRateLimitError(p.bucket);
+        }
+        if (p?.kind === "payload_too_large") {
+          throw new PayloadTooLargeError({
+            field: p.field,
+            maxChars: p.maxChars,
+            maxBytes: p.maxBytes,
+          });
+        }
+        throw error;
+      }
       return (data as { rewrite: string }).rewrite;
     },
     [llmProvider]
@@ -1692,7 +1840,7 @@ function Editor({
       const p = pendingRewritesRef.current.find((r) => r.id === rwId);
       if (!p || p.parentId != null) return;
       const currentCount = (p.spacerTo - p.spacerFrom) / 2;
-      const extra = extraSpacerParagraphsNeeded(rewriteText, currentCount);
+      const extra = extraSpacerParagraphsNeeded(rewriteText, currentCount, undefined, lineHeightPx);
       if (extra <= 0) return;
       editor
         .chain()
@@ -1712,7 +1860,7 @@ function Editor({
         r.id === rwId ? { ...r, spacerTo: newSpacerTo } : r
       );
     },
-    [editor]
+    [editor, lineHeightPx]
   );
 
   const handleOrchestratorPropose = useCallback(async () => {
@@ -1725,6 +1873,10 @@ function Editor({
     setOrchestratorError(null);
     setOrchestratorIsProposing(true);
     try {
+      if (!trialMode && subscriptionTier === "free") {
+        showUpgradeForQuotaType("orchestrator");
+        return;
+      }
       const instruction = (orchestratorInstruction.trim() || prompt.trim()).trim();
       const { data: resp, error: orchErr } = await supabase.functions.invoke(
         "orchestrator-plan",
@@ -1736,7 +1888,31 @@ function Editor({
           },
         },
       );
-      if (orchErr) throw orchErr;
+      if (orchErr) {
+        const p = await readEdgeInvokeParsed(orchErr, resp);
+        if (p?.kind === "quota_exceeded") {
+          showUpgradeForQuotaType(p.type ?? "orchestrator", {
+            used: p.used,
+            limit: p.limit,
+          });
+          return;
+        }
+        if (p?.kind === "rate_limit") {
+          setOrchestratorError(
+            "Too many orchestrator requests in a short period. Wait about a minute and try again.",
+          );
+          return;
+        }
+        if (p?.kind === "payload_too_large") {
+          setOrchestratorError(
+            p.maxBytes != null
+              ? "Request is too large."
+              : "Selection or instruction is larger than allowed.",
+          );
+          return;
+        }
+        throw orchErr;
+      }
 
       const seq = (((resp as { sequence?: string[] })?.sequence) ?? []).filter(
         (id: string) => orchestratorSpecialists.some((a) => a.id === id)
@@ -1775,6 +1951,9 @@ function Editor({
     prompt,
     llmProvider,
     orchestratorSpecialists,
+    trialMode,
+    subscriptionTier,
+    showUpgradeForQuotaType,
   ]);
 
   const runOrchestratorChain = useCallback(
@@ -1824,6 +2003,11 @@ function Editor({
         trimmedPrompt ||
         "Rewrite this selection in the agent's voice, improving clarity, flow, and style.";
 
+      if (!trialMode && subscriptionTier === "free") {
+        showUpgradeForQuotaType("orchestrator");
+        return;
+      }
+
       setOrchestratorIsExecuting(true);
       setOrchestratorError(null);
 
@@ -1845,6 +2029,9 @@ function Editor({
               title: "Rewritten:",
               text: "",
               error: null,
+              selFrom: sel.from,
+              selTo: sel.to,
+              docAction: "rewrite",
             },
             spacerInsertPos
           )
@@ -2051,7 +2238,21 @@ function Editor({
             : rw
         );
       } catch (err: any) {
-        const msg = err?.message ?? "Failed to execute orchestrator chain";
+        if (isQuotaExceededError(err)) {
+          showUpgradeForQuotaType(err.quotaType, { used: err.used, limit: err.limit });
+        }
+        if (trialMode && isTrialQuotaExceededError(err)) {
+          onTrialGated?.(err.trialType === "scrutiny" ? "scrutiny-selection" : "rewrite");
+        }
+        const msg = isQuotaExceededError(err)
+          ? "Daily rewrite limit reached"
+          : isTrialQuotaExceededError(err)
+            ? "Trial limit for this period. Sign up to continue."
+            : isBurstRateLimitError(err)
+              ? err.message
+              : isPayloadTooLargeError(err)
+                ? err.message
+                : err?.message ?? "Failed to execute orchestrator chain";
         if (USE_INFLOW_SUGGESTIONS && editor) {
           editor.commands.updateSuggestionBlock(id, {
             status: "error",
@@ -2082,6 +2283,10 @@ function Editor({
       orchestratorSpecialists,
       insertPretextRevealSpacers,
       runOrchestratorChain,
+      trialMode,
+      subscriptionTier,
+      showUpgradeForQuotaType,
+      onTrialGated,
     ]
   );
 
@@ -2098,7 +2303,7 @@ function Editor({
   // Handle overlay submit — doc selection (highlight + spacers) or nested selection inside a suggestion card
   const handleOverlaySubmit = useCallback(async () => {
     if (!storedSelection) return;
-    if (trialMode && onTrialConsume) {
+    if (trialMode && !trialSkipClientQuota && onTrialConsume) {
       const ok = onTrialConsume("rewrite");
       if (!ok) {
         onTrialGated?.("rewrite");
@@ -2108,11 +2313,15 @@ function Editor({
     const currentAgentId = selectedAgentId;
     const currentContextIds = selectedContextIds;
     const trimmedPrompt = prompt.trim();
-    const currentPrompt =
-      trimmedPrompt ||
-      (currentAgentId
-        ? "Rewrite this selection in the agent's voice, improving clarity, flow, and style."
-        : "Rewrite this selection to improve clarity, flow, and style.");
+    const defaultPrompt =
+      storedSelection.kind === "doc" && storedSelection.action === "expand"
+        ? currentAgentId
+          ? "Continue writing from this selection in the agent's voice, adding a few more sentences that flow naturally. Do not repeat the original text."
+          : "Continue writing from this selection, adding a few more sentences that flow naturally. Do not repeat the original text."
+        : currentAgentId
+          ? "Rewrite this selection in the agent's voice, improving clarity, flow, and style."
+          : "Rewrite this selection to improve clarity, flow, and style.";
+    const currentPrompt = trimmedPrompt || defaultPrompt;
 
     if (storedSelection.kind === "suggestion") {
       const sug = storedSelection;
@@ -2222,7 +2431,21 @@ function Editor({
           )
         );
       } catch (err: any) {
-        const msg = err.message || "Failed to generate rewrite";
+        if (isQuotaExceededError(err)) {
+          showUpgradeForQuotaType(err.quotaType, { used: err.used, limit: err.limit });
+        }
+        if (trialMode && isTrialQuotaExceededError(err)) {
+          onTrialGated?.(err.trialType === "scrutiny" ? "scrutiny-selection" : "rewrite");
+        }
+        const msg = isQuotaExceededError(err)
+          ? "Daily rewrite limit reached"
+          : isTrialQuotaExceededError(err)
+            ? "Trial limit for this period. Sign up to continue."
+            : isBurstRateLimitError(err)
+              ? err.message
+              : isPayloadTooLargeError(err)
+                ? err.message
+                : err.message || "Failed to generate rewrite";
         setPendingRewrites((prev) =>
           prev.map((rw) =>
             rw.id === id ? { ...rw, error: msg, isLoading: false } : rw
@@ -2262,6 +2485,7 @@ function Editor({
 
     if (USE_INFLOW_SUGGESTIONS) {
       const inflowId = nextRewriteId;
+      const suggestionTitle = sel.action === "expand" ? "Expanding:" : "Rewritten:";
       editor
         .chain()
         .focus()
@@ -2272,9 +2496,12 @@ function Editor({
             rewriteId: inflowId,
             monkeyId: "",
             status: "loading",
-            title: "Rewritten:",
+            title: suggestionTitle,
             text: "",
             error: null,
+            selFrom: sel.from,
+            selTo: sel.to,
+            docAction: sel.action,
           },
           spacerInsertPos
         )
@@ -2355,6 +2582,7 @@ function Editor({
       to: sel.to,
       originalText: selectedText,
       prompt: currentPrompt,
+      docAction: sel.action,
       rewriteText: null,
       isLoading: true,
       isRevealing: false,
@@ -2397,6 +2625,11 @@ function Editor({
         promptForApi = trimmedPrompt
           ? `${trimmedPrompt}\n\n${synonymCore}`
           : synonymCore;
+      }
+      if (sel.action === "expand") {
+        const expandCore =
+          "Write ONLY the next sentences that should come AFTER the selected text. Do NOT rewrite, rephrase, or repeat any part of the selected text. Output only the new continuation text (no quotes, no headings). Keep it in the same paragraph unless the prompt explicitly asks for a new paragraph.";
+        promptForApi = trimmedPrompt ? `${promptForApi}\n\n${expandCore}` : expandCore;
       }
 
       setInvocationLog((prev) => [
@@ -2465,7 +2698,21 @@ function Editor({
         )
       );
     } catch (err: any) {
-      const msg = err.message || "Failed to generate rewrite";
+      if (isQuotaExceededError(err)) {
+        showUpgradeForQuotaType(err.quotaType, { used: err.used, limit: err.limit });
+      }
+      if (trialMode && isTrialQuotaExceededError(err)) {
+        onTrialGated?.(err.trialType === "scrutiny" ? "scrutiny-selection" : "rewrite");
+      }
+      const msg = isQuotaExceededError(err)
+        ? "Daily rewrite limit reached"
+        : isTrialQuotaExceededError(err)
+          ? "Trial limit for this period. Sign up to continue."
+          : isBurstRateLimitError(err)
+            ? err.message
+            : isPayloadTooLargeError(err)
+              ? err.message
+              : err.message || "Failed to generate rewrite";
       if (USE_INFLOW_SUGGESTIONS && editor) {
         editor.commands.updateSuggestionBlock(id, {
           status: "error",
@@ -2508,11 +2755,13 @@ function Editor({
     selectedAgentId,
     selectedContextIds,
     trialMode,
+    trialSkipClientQuota,
     onTrialConsume,
     onTrialGated,
     fetchRewrite,
     llmProvider,
     insertPretextRevealSpacers,
+    showUpgradeForQuotaType,
   ]);
 
   // Accept a specific inline suggestion — merge nested into parent, or apply root to document
@@ -2521,13 +2770,57 @@ function Editor({
       // #region agent log
       fetch('http://127.0.0.1:7243/ingest/e7e07eac-9415-495e-a623-d26d2f751fe5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7e6622'},body:JSON.stringify({sessionId:'7e6622',runId:'pre-fix',hypothesisId:'A1',location:'Editor.tsx:handleSuggestionAccept',message:'accept_called',data:{rewriteId,pendingCount:pendingRewritesRef.current.length,hasEditor:!!editor,isInflow:USE_INFLOW_SUGGESTIONS,selFrom:editor?.state.selection.from ?? null,selTo:editor?.state.selection.to ?? null,selType:(editor as any)?.state?.selection?.constructor?.name ?? null},timestamp:Date.now()})}).catch(()=>{});
       // #endregion agent log
-      const current = pendingRewritesRef.current.find(
-        (rw) => rw.id === rewriteId
-      );
+      const current = pendingRewritesRef.current.find((rw) => rw.id === rewriteId);
       // #region agent log
       fetch('http://127.0.0.1:7243/ingest/e7e07eac-9415-495e-a623-d26d2f751fe5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7e6622'},body:JSON.stringify({sessionId:'7e6622',runId:'pre-fix',hypothesisId:'A1',location:'Editor.tsx:handleSuggestionAccept',message:'accept_current',data:{found:!!current,parentId:current?.parentId ?? null,from:current?.from ?? null,to:current?.to ?? null,spacerFrom:current?.spacerFrom ?? null,spacerTo:current?.spacerTo ?? null,hasRewriteText:!!current?.rewriteText,rewriteLen:current?.rewriteText?.length ?? null},timestamp:Date.now()})}).catch(()=>{});
       // #endregion agent log
-      if (!current?.rewriteText) return;
+      if (!current?.rewriteText) {
+        if (USE_INFLOW_SUGGESTIONS && editor) {
+          // Fallback: after refresh/undo, the suggestion block can exist without in-memory pending state.
+          let nodePos: number | null = null;
+          let nodeAttrs: any = null;
+          editor.state.doc.descendants((node: any, pos: number) => {
+            if (node.type?.name === "suggestionBlock" && (node.attrs as any)?.rewriteId === rewriteId) {
+              nodePos = pos;
+              nodeAttrs = node.attrs;
+              return false;
+            }
+            return true;
+          });
+          const text = String((nodeAttrs?.text ?? "") as any).trim();
+          if (!nodePos || !text) return;
+          const action: "rewrite" | "expand" =
+            nodeAttrs?.docAction === "expand" ? "expand" : "rewrite";
+          const range =
+            findHighlightRange(editor.state.doc, HIGHLIGHT_COLOR) ??
+            (typeof nodeAttrs?.selFrom === "number" && typeof nodeAttrs?.selTo === "number"
+              ? { from: nodeAttrs.selFrom, to: nodeAttrs.selTo }
+              : null);
+          if (!range) return;
+
+          editor
+            .chain()
+            .focus()
+            .command(({ tr, state }) => {
+              const n = state.doc.nodeAt(nodePos!);
+              if (n) tr.delete(nodePos!, nodePos! + n.nodeSize);
+              return true;
+            })
+            .setTextSelection({ from: range.from, to: range.to })
+            .unsetHighlight()
+            .command(({ tr }) => {
+              if (action === "expand") {
+                tr.insertText(`\n\n${text}`, range.to);
+                return true;
+              }
+              tr.deleteSelection();
+              tr.insertText(text, tr.selection.from);
+              return true;
+            })
+            .run();
+        }
+        return;
+      }
 
       if (current.parentId != null) {
         const pid = current.parentId;
@@ -2536,10 +2829,15 @@ function Editor({
         const parent = pendingRewritesRef.current.find((r) => r.id === pid);
         if (!parent?.rewriteText) return;
 
+        const childEdited =
+          revealContentRefs.current[rewriteId]?.innerText ?? current.rewriteText;
+        const parentEdited =
+          revealContentRefs.current[pid]?.innerText ?? parent.rewriteText;
+
         const merged =
-          parent.rewriteText.slice(0, start) +
-          current.rewriteText +
-          parent.rewriteText.slice(end);
+          parentEdited.slice(0, start) +
+          childEdited +
+          parentEdited.slice(end);
 
         pendingRewritesRef.current = pendingRewritesRef.current
           .filter((r) => r.id !== rewriteId)
@@ -2566,7 +2864,26 @@ function Editor({
       }
 
       const { from, to, spacerFrom, spacerTo } = current;
-      const rewriteText = current.rewriteText;
+      const isExpand = current.docAction === "expand";
+      const rewriteText = (() => {
+        // Prefer the live edited content, even if React state hasn't flushed yet.
+        if (USE_INFLOW_SUGGESTIONS && editor) {
+          let nodeText: string | null = null;
+          editor.state.doc.descendants((node) => {
+            if (node.type?.name === "suggestionBlock" && (node.attrs as any)?.rewriteId === rewriteId) {
+              nodeText = String(((node.attrs as any)?.text ?? "") as any);
+              return false;
+            }
+            return true;
+          });
+          const t = (nodeText ?? "").trim();
+          if (t) return t;
+        } else {
+          const elText = (revealContentRefs.current[rewriteId]?.innerText ?? "").trim();
+          if (elText) return elText;
+        }
+        return current.rewriteText;
+      })();
       // #region agent log
       fetch('http://127.0.0.1:7243/ingest/e7e07eac-9415-495e-a623-d26d2f751fe5',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7e6622'},body:JSON.stringify({sessionId:'7e6622',runId:'pre-fix',hypothesisId:'A2',location:'Editor.tsx:handleSuggestionAccept',message:'accept_pre_replace',data:{rewriteId,from,to,selectedText:editor.state.doc.textBetween(from,to,' '),rewritePreview:rewriteText.slice(0,80)},timestamp:Date.now()})}).catch(()=>{});
       // #endregion agent log
@@ -2616,11 +2933,20 @@ function Editor({
           }
           return true;
         })
-        // Now replace highlighted text — unset highlight first so new text is clean
+        // Apply to document (rewrite replaces; expand appends below)
         .setTextSelection({ from, to })
         .unsetHighlight()
-        .deleteSelection()
-        .insertContent(rewriteText)
+        .command(({ tr }) => {
+          const text = String(rewriteText ?? "").trim();
+          if (!text) return false;
+          if (isExpand) {
+            tr.insertText(`\n\n${text}`, spacerFrom);
+            return true;
+          }
+          tr.deleteSelection();
+          tr.insertText(text, tr.selection.from);
+          return true;
+        })
         .run();
 
       // #region agent log
@@ -2631,7 +2957,7 @@ function Editor({
       });
       // #endregion agent log
 
-      if (!USE_INFLOW_SUGGESTIONS) {
+      if (!USE_INFLOW_SUGGESTIONS && !isExpand) {
         joinSplitParagraphsAfterSpacerRemoval(editor);
       }
     },
@@ -2648,7 +2974,37 @@ function Editor({
       const current = pendingRewritesRef.current.find(
         (rw) => rw.id === rewriteId
       );
-      if (!current) return;
+      if (!current) {
+        if (USE_INFLOW_SUGGESTIONS && editor) {
+          let nodePos: number | null = null;
+          editor.state.doc.descendants((node: any, pos: number) => {
+            if (node.type?.name === "suggestionBlock" && (node.attrs as any)?.rewriteId === rewriteId) {
+              nodePos = pos;
+              return false;
+            }
+            return true;
+          });
+          if (nodePos == null) return;
+          const range = findHighlightRange(editor.state.doc, HIGHLIGHT_COLOR);
+          editor
+            .chain()
+            .focus()
+            .command(({ tr, state }) => {
+              const n = state.doc.nodeAt(nodePos!);
+              if (n) tr.delete(nodePos!, nodePos! + n.nodeSize);
+              return true;
+            })
+            .command(({ tr, state }) => {
+              if (!range) return true;
+              // Clear highlight if we can still find it.
+              tr.setSelection(TextSelection.create(state.doc, range.from, range.to));
+              return true;
+            })
+            .unsetHighlight()
+            .run();
+        }
+        return;
+      }
 
       if (current.parentId != null) {
         pendingRewritesRef.current = pendingRewritesRef.current.filter(
@@ -2737,12 +3093,23 @@ function Editor({
     rejectSuggestionRef.current = handleSuggestionReject;
   }, [handleSuggestionReject]);
 
+  useEffect(() => {
+    const id = requestAnimationFrame(() => updatePageCount());
+    return () => cancelAnimationFrame(id);
+  }, [lineSpacing, updatePageCount]);
+
+  const handleLineSpacingChange = useCallback((value: number) => {
+    setLineSpacing(clampLineSpacing(value));
+  }, []);
+
   return (
     <>
       <Toolbar
         editor={editor}
         llmProvider={llmProvider}
         onLlmProviderChange={setLlmProvider}
+        lineSpacing={lineSpacing}
+        onLineSpacingChange={handleLineSpacingChange}
       />
       <div ref={editorPageAreaRef} className="editor-page-area">
         <aside
@@ -2755,8 +3122,22 @@ function Editor({
             expanded={scrutinyExpanded}
             onExpandedChange={setScrutinyExpanded}
             trialMode={trialMode}
-            onTrialConsume={(a) => onTrialConsume?.(a) ?? true}
+            trialSkipClientQuota={trialSkipClientQuota}
+            subscriptionTier={subscriptionTier}
+            onTrialConsume={
+              trialSkipClientQuota || !onTrialConsume ? undefined : (a) => onTrialConsume(a)
+            }
             onTrialGated={(a) => onTrialGated?.(a)}
+            onUpgradeRequired={() => {
+              const tier = subscriptionTier ?? "free";
+              const limit = dailyScrutinyLimitForTier(tier);
+              setUpgradeReason(
+                limit != null
+                  ? `Your plan includes ${limit} AI Scrutiny scans per day (UTC). Upgrade for more.`
+                  : "Upgrade your plan to unlock higher Scrutiny usage.",
+              );
+              setUpgradeModalOpen(true);
+            }}
           />
           <WritingPulsePanel
             editor={editor}
@@ -2935,6 +3316,10 @@ function Editor({
               <div className="editor-orchestrator-muted" data-onboard="orchestrator-locked">
                 Locked in free trial. Sign up to unlock Orchestrator.
               </div>
+            ) : subscriptionTier === "free" ? (
+              <div className="editor-orchestrator-muted">
+                Orchestrator isn&apos;t included on the free plan. Upgrade to unlock multi-monkey chains.
+              </div>
             ) : null}
           </div>
               </>
@@ -2956,7 +3341,12 @@ function Editor({
             onClick={handlePageClick}
           >
             <div className="page-card" />
-            <div ref={contentRef} className="editor-content" data-onboard="editor">
+            <div
+              ref={contentRef}
+              className="editor-content"
+              style={{ "--editor-line-height": String(lineSpacing) } as CSSProperties}
+              data-onboard="editor"
+            >
               <EditorContent editor={editor} />
             </div>
 
@@ -3034,7 +3424,7 @@ function Editor({
                       <div className="inline-suggestion-text">
                         <span className="inline-suggestion-arrow">↪</span>
                         <span className="inline-suggestion-label">
-                          Rewritten:
+                          {rw.docAction === "expand" ? "Expanded:" : "Rewritten:"}
                         </span>{" "}
                         {!splitRanges ? (
                           rw.orchestratorMode === "sequential" &&
@@ -3349,6 +3739,11 @@ function Editor({
         )}
       <Overlay
         isOpen={isOverlayOpen}
+        mode={
+          storedSelection?.kind === "doc" && storedSelection.action === "expand"
+            ? "expand"
+            : "rewrite"
+        }
         onClose={handleOverlayClose}
         onSubmit={handleOverlaySubmit}
         prompt={prompt}
@@ -3358,6 +3753,11 @@ function Editor({
         selectedContextIds={selectedContextIds}
         onContextChange={setSelectedContextIds}
         disableOutsideClose={trialMode && tourStepId === "overlay"}
+      />
+      <UpgradeModal
+        open={upgradeModalOpen}
+        reason={upgradeReason}
+        onClose={() => setUpgradeModalOpen(false)}
       />
     </>
   );

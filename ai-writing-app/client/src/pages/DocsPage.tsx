@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import {
@@ -7,18 +7,33 @@ import {
   type DocMeta,
   type FolderMeta,
   listAllFolders,
+  ensureFolderStorageForUser,
   createFolder,
   deleteDoc,
   deleteFolder,
 } from "../lib/docs";
+import { requireUserId } from "../lib/auth";
 import { listContexts, createContext, deleteContext, type ContextItem } from "../lib/contexts";
 import {
   isBakedInAgentName,
   listDriveAgents,
   createAgent,
+  countUserCustomMonkeys,
   deleteAgent,
   type AgentMeta,
 } from "../lib/agents";
+import { redirectToStripeBillingPortal } from "../lib/billingPortal";
+import {
+  getMySubscription,
+  type SubscriptionTier,
+} from "../lib/subscriptions";
+import UpgradeModal from "../components/UpgradeModal";
+import {
+  FREE_TIER_MAX_DOCUMENTS,
+  contextLimitForTier,
+  customMonkeyLimitForTier,
+} from "../lib/freeTierLimits";
+
 
 function truncateDisplayName(value: string, maxChars = 20): string {
   if (value.length <= maxChars) return value;
@@ -66,6 +81,13 @@ export default function DocsPage() {
   const [deleteFolderId, setDeleteFolderId] = useState<string | null>(null);
   const [deleteFolderTitle, setDeleteFolderTitle] = useState("");
   const [deleteFolderTypedTitle, setDeleteFolderTypedTitle] = useState("");
+  const [portalBusy, setPortalBusy] = useState(false);
+  const [subTier, setSubTier] = useState<SubscriptionTier>("free");
+  const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
+  const [upgradeReason, setUpgradeReason] = useState("");
+  const [driveMenuOpen, setDriveMenuOpen] = useState(false);
+  const driveMenuRef = useRef<HTMLDivElement>(null);
+
   const navigate = useNavigate();
   // Guide now lives on a dedicated docs-style page.
 
@@ -85,11 +107,46 @@ export default function DocsPage() {
   }, [navigate]);
 
   useEffect(() => {
+    if (!driveMenuOpen) return;
+    function handlePointerDown(e: MouseEvent) {
+      if (driveMenuRef.current && !driveMenuRef.current.contains(e.target as Node)) {
+        setDriveMenuOpen(false);
+      }
+    }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setDriveMenuOpen(false);
+    }
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [driveMenuOpen]);
+
+  useEffect(() => {
+    getMySubscription()
+      .then((row) => setSubTier(row?.tier ?? "free"))
+      .catch(() => setSubTier("free"));
+  }, []);
+
+  useEffect(() => {
+    void requireUserId()
+      .then((uid) => {
+        ensureFolderStorageForUser(uid);
+      })
+      .catch(() => {
+        /* ignore */
+      })
+      .finally(() => {
+        setFolders(listAllFolders());
+        setActiveFolderId(null);
+      });
+
     listDocs()
       .then(setDocs)
       .catch(() => setDocs([]))
       .finally(() => setDocsLoading(false));
-    setFolders(listAllFolders());
     listContexts()
       .then(setContexts)
       .catch(() => setContexts([]));
@@ -105,6 +162,13 @@ export default function DocsPage() {
 
   async function handleConfirmNewDoc() {
     try {
+      if (subTier === "free" && docs.length >= FREE_TIER_MAX_DOCUMENTS) {
+        setUpgradeReason(
+          `Free accounts can have up to ${FREE_TIER_MAX_DOCUMENTS} documents. Upgrade to create more.`,
+        );
+        setUpgradeModalOpen(true);
+        return;
+      }
       const title = newDocTitle.trim() || "Untitled document";
       const meta = await createDoc({ title, folderId: activeFolderId });
       setIsNewDocModalOpen(false);
@@ -182,6 +246,14 @@ export default function DocsPage() {
 
   async function handleConfirmNewContext() {
     try {
+      const limit = contextLimitForTier(subTier);
+      if (limit != null && contexts.length >= limit) {
+        setUpgradeReason(
+          `Your plan can have up to ${limit} context books. Upgrade to create more.`,
+        );
+        setUpgradeModalOpen(true);
+        return;
+      }
       const title = newContextTitle.trim() || "Untitled context";
       const item = await createContext({ title });
       setIsNewContextModalOpen(false);
@@ -260,6 +332,17 @@ export default function DocsPage() {
 
   async function handleConfirmNewAgent() {
     try {
+      const customCount = countUserCustomMonkeys(agents);
+      const limit = customMonkeyLimitForTier(subTier);
+      if (limit != null && customCount >= limit) {
+        setUpgradeReason(
+          subTier === "free"
+            ? `Free accounts can create one custom monkey from scratch. You can still save more copies of Pathos Monkey, Logic Monkey, or Synonym Sensei from the network. Upgrade to add more custom monkeys.`
+            : `Your plan can create up to ${limit} custom monkeys from scratch. Upgrade to add more.`,
+        );
+        setUpgradeModalOpen(true);
+        return;
+      }
       const trimmed = newAgentName.trim() || "New monkey";
       const agent = await createAgent({ name: trimmed });
       setIsNewAgentModalOpen(false);
@@ -394,24 +477,94 @@ export default function DocsPage() {
             </button>
           </div>
         </div>
-        <div className="docs-header-actions">
+        <div
+          className="docs-header-menu"
+          ref={driveMenuRef}
+          onMouseEnter={() => setDriveMenuOpen(true)}
+          onMouseLeave={() => setDriveMenuOpen(false)}
+        >
           <button
             type="button"
-            className="docs-header-action"
-            onClick={() => navigate("/guide")}
+            className="docs-header-menu-trigger"
+            aria-expanded={driveMenuOpen}
+            aria-haspopup="true"
+            aria-controls={driveMenuOpen ? "drive-header-menu" : undefined}
+            aria-label="Menu"
+            onClick={() => setDriveMenuOpen((o) => !o)}
           >
-            Total guide
+            <span className="docs-header-menu-trigger-bars" aria-hidden>
+              <span className="docs-header-menu-trigger-bar" />
+              <span className="docs-header-menu-trigger-bar" />
+              <span className="docs-header-menu-trigger-bar" />
+            </span>
           </button>
-          <button
-            type="button"
-            className="docs-header-action docs-header-action--signout"
-            onClick={async () => {
-              await supabase.auth.signOut();
-              navigate("/?skipIntro=1", { replace: true });
-            }}
-          >
-            Sign out
-          </button>
+          {driveMenuOpen && (
+            <div
+              id="drive-header-menu"
+              className="docs-header-menu-dropdown"
+              role="menu"
+              aria-label="Account and help"
+            >
+              {subTier !== "free" && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="docs-header-menu-item"
+                  disabled={portalBusy}
+                  onClick={async () => {
+                    setPortalBusy(true);
+                    try {
+                      await redirectToStripeBillingPortal();
+                    } catch (e) {
+                      console.error(e);
+                      window.alert(
+                        e instanceof Error ? e.message : "Could not open billing portal.",
+                      );
+                      setPortalBusy(false);
+                    }
+                  }}
+                >
+                  {portalBusy ? "Opening…" : "Manage billing"}
+                </button>
+              )}
+              {(subTier === "free" || subTier === "pro") && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="docs-header-menu-item"
+                  onClick={() => {
+                    setDriveMenuOpen(false);
+                    navigate("/pricing");
+                  }}
+                >
+                  Upgrade
+                </button>
+              )}
+              <button
+                type="button"
+                role="menuitem"
+                className="docs-header-menu-item"
+                onClick={() => {
+                  setDriveMenuOpen(false);
+                  navigate("/guide");
+                }}
+              >
+                Total guide
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="docs-header-menu-item docs-header-menu-item--signout"
+                onClick={async () => {
+                  setDriveMenuOpen(false);
+                  await supabase.auth.signOut();
+                  navigate("/?skipIntro=1", { replace: true });
+                }}
+              >
+                Sign out
+              </button>
+            </div>
+          )}
         </div>
       </header>
       <div className="docs-main">
@@ -942,6 +1095,11 @@ export default function DocsPage() {
           )}
         </section>
       </div>
+      <UpgradeModal
+        open={upgradeModalOpen}
+        reason={upgradeReason}
+        onClose={() => setUpgradeModalOpen(false)}
+      />
     </div>
   );
 }

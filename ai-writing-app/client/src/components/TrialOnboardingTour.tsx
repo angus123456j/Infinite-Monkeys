@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { shortcut, modKeyLabel } from "../lib/shortcuts";
 
 type Step = {
   id: string;
@@ -47,11 +48,14 @@ export default function TrialOnboardingTour({
   startMode = "after-interaction",
   delayMs = 10_000,
   forceOpen = false,
+  /** When false, immediate start waits so DOM targets (e.g. toolbar Guide) can mount first. */
+  targetsReady = true,
 }: {
   startMode?: TrialOnboardingStartMode;
   delayMs?: number;
   /** When true, ignore the dismissed flag and always show. */
   forceOpen?: boolean;
+  targetsReady?: boolean;
 }) {
   const [guideGate, setGuideGate] = useState<{ opened: boolean; closedAfterOpen: boolean }>({
     opened: false,
@@ -106,7 +110,7 @@ export default function TrialOnboardingTour({
         id: "guide",
         title: "Start here: the Guide",
         body: "Open the Guide to see the full workflow.",
-        selector: '[data-onboard="guide"]',
+        selector: 'button.toolbar-btn.guide-btn[data-onboard="guide"]',
         placement: "right",
         showVideoPlaceholder: false,
         nextEnabledWhen: () => guideGate.opened || guideGate.closedAfterOpen,
@@ -115,8 +119,8 @@ export default function TrialOnboardingTour({
       },
       {
         id: "rewrite",
-        title: "Rewrite with Command K",
-        body: "Highlight a sentence, then press Command K to open the rewrite box.",
+        title: `Rewrite with ${modKeyLabel()}+K`,
+        body: `Highlight a sentence, then press ${shortcut("K")} to open the rewrite box.`,
         selector: '[data-onboard="editor"]',
         placement: "right",
         nextEnabledWhen: () => !!document.querySelector(".ai-overlay"),
@@ -265,6 +269,17 @@ export default function TrialOnboardingTour({
   const safeIdx = clamp(idx, 0, steps.length - 1);
   const step = steps[safeIdx]!;
 
+  // During the "editor" step, force users to click Next in the tour card
+  // (prevents skipping ahead by accepting/rejecting a suggestion immediately).
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const lock = Boolean(open && started && step.id === "editor");
+    document.documentElement.dataset.imTourLockSuggestions = lock ? "1" : "0";
+    return () => {
+      document.documentElement.dataset.imTourLockSuggestions = "0";
+    };
+  }, [open, started, step.id]);
+
   useEffect(() => {
     if (!open || !started) return;
     // #region agent log
@@ -355,6 +370,7 @@ export default function TrialOnboardingTour({
     if (started) return;
 
     if (startMode === "immediate") {
+      if (!targetsReady) return;
       setStarted(true);
       return;
     }
@@ -374,7 +390,7 @@ export default function TrialOnboardingTour({
       if (startTimerRef.current != null) window.clearTimeout(startTimerRef.current);
       startTimerRef.current = null;
     };
-  }, [open, started, startMode, delayMs, forceOpen]);
+  }, [open, started, startMode, delayMs, forceOpen, targetsReady]);
 
   const close = () => {
     setOpen(false);
@@ -408,14 +424,23 @@ export default function TrialOnboardingTour({
     };
   }, [open, started, effectiveSelector]);
 
-  // If target isn't yet mounted, retry a couple frames.
+  // If target isn't yet mounted, retry for a short window (Editor/Toolbar often land one frame late).
   useEffect(() => {
     if (!open || !started) return;
     if (rect) return;
-    if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
-    rafRef.current = requestAnimationFrame(() => {
-      setRect(getTargetRect(effectiveSelector));
-    });
+    let attempts = 0;
+    const tick = () => {
+      const r = getTargetRect(effectiveSelector);
+      if (r) {
+        setRect(r);
+        return;
+      }
+      attempts += 1;
+      if (attempts < 90) {
+        rafRef.current = requestAnimationFrame(tick);
+      }
+    };
+    rafRef.current = requestAnimationFrame(tick);
     return () => {
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
@@ -521,12 +546,23 @@ export default function TrialOnboardingTour({
     const tipH = step.showVideoPlaceholder ? 240 : 190;
     const margin = 16;
     if (!r) {
-      return { left: clamp(vw - tipW - 24, 24, vw - tipW - 24), top: 88 };
+      return { left: clamp(vw - tipW - 24, 24, vw - tipW - 24), top: clamp(152, 16, vh - tipH - 16) };
     }
 
     // Keep the Editor-tab steps near the left rail, but avoid overlapping the rail/panel.
     if (step.id === "editor-tab") {
       return { left: 180, top: clamp(130, 16, vh - tipH - 16) };
+    }
+    if (step.id === "guide" && highlight) {
+      const gapGuide = 16;
+      return {
+        left: clamp(highlight.left, margin, vw - tipW - margin),
+        top: clamp(
+          highlight.top + highlight.height + gapGuide + 28,
+          margin,
+          vh - tipH - margin,
+        ),
+      };
     }
     if (step.id === "editor-collapse") {
       return { left: 180, top: clamp(210, 16, vh - tipH - 16) };
@@ -676,10 +712,12 @@ export default function TrialOnboardingTour({
             top: `${highlight.top}px`,
             width: `${highlight.width}px`,
             height: `${highlight.height}px`,
-            borderColor: step.id === "guide" ? "transparent" : undefined,
-            boxShadow: dimEnabledFinal
-              ? "0 18px 60px rgba(0, 0, 0, 0.28)"
-              : "0 18px 60px rgba(0, 0, 0, 0.18)",
+            boxShadow:
+              step.id === "guide"
+                ? "0 0 0 3px rgba(179, 134, 45, 0.55), 0 18px 60px rgba(0, 0, 0, 0.32)"
+                : dimEnabledFinal
+                  ? "0 18px 60px rgba(0, 0, 0, 0.28)"
+                  : "0 18px 60px rgba(0, 0, 0, 0.18)",
           }}
         />
       )}

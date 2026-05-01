@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { listAgents, type AgentMeta } from "../lib/agents";
+import { listDriveAgents, type AgentMeta } from "../lib/agents";
 import { listContexts, type ContextItem } from "../lib/contexts";
 
 interface OverlayProps {
   isOpen: boolean;
+  mode?: "rewrite" | "expand";
   onClose: () => void;
   onSubmit: () => void;
   prompt: string;
@@ -17,6 +18,7 @@ interface OverlayProps {
 
 function Overlay({
   isOpen,
+  mode = "rewrite",
   onClose,
   onSubmit,
   prompt,
@@ -54,7 +56,7 @@ function Overlay({
   // Fetch agents once when overlay first opens
   useEffect(() => {
     if (isOpen && !agentsLoaded) {
-      listAgents()
+      listDriveAgents()
         .then(setAgents)
         .catch(() => setAgents([]))
         .finally(() => setAgentsLoaded(true));
@@ -186,7 +188,11 @@ function Overlay({
   return (
     <div ref={overlayRef} className="ai-overlay" style={overlayStyle}>
       <div className="ai-overlay-header" onMouseDown={handleMouseDown} style={{ cursor: "grab" }}>
-        <span className="ai-overlay-title">Summon Infinite Monkeys</span>
+        <span className="ai-overlay-title">
+          {mode === "expand"
+            ? "Expand with Infinite Monkeys"
+            : "Rewrite with Infinite Monkeys"}
+        </span>
         <button type="button" className="ai-overlay-close" onClick={() => close("x")} title="Close (Esc)">
           ×
         </button>
@@ -249,7 +255,11 @@ function Overlay({
         <textarea
           ref={inputRef}
           className="ai-overlay-input"
-          placeholder="Tell the monkeys what to rewrite..."
+          placeholder={
+            mode === "expand"
+              ? "Tell the monkeys what to write next..."
+              : "Tell the monkeys what to rewrite..."
+          }
           value={prompt}
           rows={1}
           onChange={(e) => {
@@ -279,7 +289,7 @@ function Overlay({
           onClick={onSubmit}
           disabled={!prompt.trim() && !selectedAgentId}
         >
-          Summon
+          {mode === "expand" ? "Expand" : "Rewrite"}
         </button>
       </div>
     </div>

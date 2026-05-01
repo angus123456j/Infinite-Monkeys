@@ -9,7 +9,7 @@ import { agentsToFeatureMatrix } from "../lib/agentSemanticEmbedding";
 import { computeClusterTitles } from "../lib/clusterLabels";
 import { layoutClusteredNodes } from "../lib/clusterLayout";
 import { kMeans } from "../lib/kmeans";
-import { listNetworkAgents, saveAgentFromNetwork, searchAgents, type AgentMeta } from "../lib/agents";
+import { listNetworkAgents, saveAgentFromNetwork, searchAgents, isBakedInAgentName, type AgentMeta } from "../lib/agents";
 import "./MonkeyAgentsNetworkPage.css";
 
 /** Heuristic K (sqrt-ish), capped so the legend stays readable. */
@@ -225,24 +225,15 @@ export default function MonkeyAgentsNetworkPage() {
             )}
           </div>
           <div className="network-overlay-panel-divider" />
-          <p className="network-overlay-panel-text" style={{ whiteSpace: "pre-wrap" }}>
-            {[
-              activeAgent.role ? `Archetype: ${activeAgent.role}` : "",
-              activeAgent.strengths ? `\nStrengths:\n${activeAgent.strengths}` : "",
-              activeAgent.identity ? `\nIdentity:\n${activeAgent.identity}` : "",
-              activeAgent.behavior ? `\nBehavior:\n${activeAgent.behavior}` : "",
-              activeAgent.constraints ? `\nConstraints:\n${activeAgent.constraints}` : "",
-            ]
-              .filter(Boolean)
-              .join("\n")}
-          </p>
-
           {panelPinned && (
-            <div className="network-overlay-panel-actions">
+            <div className="network-overlay-panel-actions network-overlay-panel-actions--top">
               <button
                 type="button"
                 className="network-overlay-panel-save"
-                disabled={saving || !!saved[activeAgent.id]}
+                disabled={
+                  saving ||
+                  (!isBakedInAgentName(activeAgent.name) && !!saved[activeAgent.id])
+                }
                 onClick={() => {
                   setSaving(true);
                   saveAgentFromNetwork(activeAgent.id)
@@ -255,6 +246,17 @@ export default function MonkeyAgentsNetworkPage() {
               </button>
             </div>
           )}
+          <p className="network-overlay-panel-text" style={{ whiteSpace: "pre-wrap" }}>
+            {[
+              activeAgent.role ? `Archetype: ${activeAgent.role}` : "",
+              activeAgent.strengths ? `\nStrengths:\n${activeAgent.strengths}` : "",
+              activeAgent.identity ? `\nIdentity:\n${activeAgent.identity}` : "",
+              activeAgent.behavior ? `\nBehavior:\n${activeAgent.behavior}` : "",
+              activeAgent.constraints ? `\nConstraints:\n${activeAgent.constraints}` : "",
+            ]
+              .filter(Boolean)
+              .join("\n")}
+          </p>
         </aside>
       )}
 

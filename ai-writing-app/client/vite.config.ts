@@ -45,11 +45,13 @@ export default defineConfig({
         target: "http://127.0.0.1:3001",
         changeOrigin: true,
         configure: (proxy) => {
-          if (sharedSecret) {
-            proxy.on("proxyReq", (proxyReq) => {
+          proxy.on("proxyReq", (proxyReq, req) => {
+            const auth = req.headers.authorization;
+            if (auth) proxyReq.setHeader("Authorization", auth as string);
+            if (sharedSecret) {
               proxyReq.setHeader("X-Shared-Secret", sharedSecret);
-            });
-          }
+            }
+          });
         },
       },
     },

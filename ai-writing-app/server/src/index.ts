@@ -9,6 +9,7 @@ import express, { Request, Response, NextFunction } from "express";
 import rateLimit from "express-rate-limit";
 import cors from "cors";
 import { registerScrutinyRoutes } from "./scrutiny/registerScrutinyRoutes.js";
+import { enforceAnonymousScrutinyTrialQuota } from "./scrutiny/anonTrialQuota.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -29,7 +30,7 @@ app.use(
   cors({
     origin: corsOrigins,
     methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "X-Shared-Secret"],
+    allowedHeaders: ["Content-Type", "X-Shared-Secret", "Authorization"],
   }),
 );
 
@@ -56,7 +57,7 @@ const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
   next();
 };
 
-registerScrutinyRoutes({ app, limiter, authMiddleware });
+registerScrutinyRoutes({ app, limiter, authMiddleware, enforceAnonymousScrutinyTrialQuota });
 
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", service: "scrutiny" });

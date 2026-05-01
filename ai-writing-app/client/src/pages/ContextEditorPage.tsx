@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { supabase } from "../lib/supabase";
 import Editor from "../components/Editor";
 import DocMenuBar from "../components/DocMenuBar";
 import FindReplaceModal from "../components/FindReplaceModal";
@@ -10,9 +11,11 @@ import { getContext, updateContext } from "../lib/contexts";
 import type { Editor as TiptapEditor } from "@tiptap/react";
 import { parseMonkeyTimeline } from "../lib/monkeyTimeline";
 import type { AgentInvocationLogEntry } from "../components/AgentInvocationTimeline";
+import { getMySubscription, type SubscriptionTier } from "../lib/subscriptions";
 
 export default function ContextEditorPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [editor, setEditor] = useState<TiptapEditor | null>(null);
   const [title, setTitle] = useState("Untitled context");
   const [initialContent, setInitialContent] = useState<string>("<p></p>");
@@ -23,9 +26,55 @@ export default function ContextEditorPage() {
   const [findReplaceOpen, setFindReplaceOpen] = useState(false);
   const [wordCountOpen, setWordCountOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [sessionReady, setSessionReady] = useState(false);
+  const [subscriptionTier, setSubscriptionTier] = useState<SubscriptionTier>("free");
 
   useEffect(() => {
-    if (!id) { setLoading(false); return; }
+    let mounted = true;
+    void supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      if (!data.session) {
+        navigate("/?skipIntro=1", { replace: true });
+        return;
+      }
+      setSessionReady(true);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
+      if (!session) {
+        navigate("/?skipIntro=1", { replace: true });
+        setSessionReady(false);
+      } else {
+        setSessionReady(true);
+      }
+    });
+    return () => {
+      mounted = false;
+      sub.subscription.unsubscribe();
+    };
+  }, [navigate]);
+
+  useEffect(() => {
+    if (!sessionReady) return;
+    let cancelled = false;
+    void getMySubscription()
+      .then((row) => {
+        if (!cancelled) setSubscriptionTier(row?.tier ?? "free");
+      })
+      .catch(() => {
+        if (!cancelled) setSubscriptionTier("free");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionReady]);
+
+  useEffect(() => {
+    if (!sessionReady) return;
+    if (!id) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
     getContext(id)
       .then((ctx) => {
         if (ctx) {
@@ -36,7 +85,7 @@ export default function ContextEditorPage() {
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, [id]);
+  }, [id, sessionReady]);
 
   const handleTitleChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -100,6 +149,7 @@ export default function ContextEditorPage() {
           docId={id ?? undefined}
           initialContent={initialContent}
           initialMonkeyTimeline={initialMonkeyTimeline}
+          subscriptionTier={subscriptionTier}
           onSaveMonkeyTimeline={(entries) => {
             if (id) void updateContext(id, { monkeyTimeline: entries });
           }}

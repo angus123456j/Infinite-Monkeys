@@ -1,9 +1,37 @@
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders, corsPreflightResponse } from "../_shared/cors.ts";
 import { generateText, getHttpStatusDeep, type LlmProviderMode } from "../_shared/llm.ts";
 import { getAuthedUser, isAuthedError, jsonError } from "../_shared/jwtUser.ts";
-import { parseJsonBody } from "../_shared/request.ts";
+import {
+  fieldTooLargeResponse,
+  MAX_BODY_BYTES_REWRITE,
+  parseJsonBodyLimited,
+} from "../_shared/request.ts";
 import { sanitizeRewriteOutput } from "../_shared/sanitize.ts";
+import {
+  guardRewriteBursts,
+  MAX_REWRITE_PROMPT_CHARS,
+  MAX_REWRITE_SENTENCE_CTX_CHARS,
+  MAX_REWRITE_TEXT_CHARS,
+} from "../_shared/rateLimit.ts";
 import { createServiceClient } from "../_shared/supabase.ts";
+
+const FREE_TIER_DAILY_SENTENCES = 100;
+const PRO_TIER_DAILY_SENTENCES = 1500;
+/** Same 5h epoch as client trial hint (UTC ms since epoch). */
+const TRIAL_FIVE_H_MS = 5 * 3600 * 1000;
+
+function trialBucketId(): number {
+  return Math.floor(Date.now() / TRIAL_FIVE_H_MS);
+}
+/** ~75 output characters ≈ one “assisted sentence” for quota display. */
+const OUTPUT_CHARS_PER_SENTENCE = 75;
+
+function sentencesFromRewriteOutput(text: string): number {
+  const t = (text ?? "").trim();
+  if (!t.length) return 0;
+  return Math.max(1, Math.ceil(t.length / OUTPUT_CHARS_PER_SENTENCE));
+}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return corsPreflightResponse();
@@ -20,8 +48,9 @@ Deno.serve(async (req) => {
       return jsonError(userResult.error, userResult.status);
     }
     const userId = userResult.id;
+    const isAnon = (userResult as { is_anonymous?: boolean }).is_anonymous === true;
 
-    const { body, error: parseErr } = await parseJsonBody(req);
+    const { body, error: parseErr } = await parseJsonBodyLimited(req, MAX_BODY_BYTES_REWRITE);
     if (parseErr) return parseErr;
 
     const { text, prompt, agentId, contextId, contextIds, sentenceContext, llmProvider: rawLlm } = body;
@@ -38,6 +67,16 @@ Deno.serve(async (req) => {
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
+    if (text.length > MAX_REWRITE_TEXT_CHARS) {
+      return fieldTooLargeResponse("text", MAX_REWRITE_TEXT_CHARS);
+    }
+    if (prompt.length > MAX_REWRITE_PROMPT_CHARS) {
+      return fieldTooLargeResponse("prompt", MAX_REWRITE_PROMPT_CHARS);
+    }
+    const rawSentenceCtx = typeof sentenceContext === "string" ? sentenceContext : "";
+    if (rawSentenceCtx.length > MAX_REWRITE_SENTENCE_CTX_CHARS) {
+      return fieldTooLargeResponse("sentenceContext", MAX_REWRITE_SENTENCE_CTX_CHARS);
+    }
 
     const llmProvider: LlmProviderMode =
       rawLlm === "gemini" || rawLlm === "deepseek" || rawLlm === "auto"
@@ -47,6 +86,71 @@ Deno.serve(async (req) => {
     console.log(`[rewrite] provider=${llmProvider} agentId=${agentId ?? "none"} textLen=${text.length}`);
 
     const supabase = createServiceClient();
+
+    const burst = await guardRewriteBursts(supabase, userId, req);
+    if (burst) return burst;
+
+    const authHeader = req.headers.get("Authorization") ?? "";
+
+    if (isAnon) {
+      const userSb = createClient(supabaseUrl, supabaseAnonKey, {
+        global: { headers: { Authorization: authHeader } },
+      });
+      const bucketId = trialBucketId();
+      const { data: allowed, error: trialRpcErr } = await userSb.rpc("try_consume_anonymous_trial_rewrite", {
+        p_bucket_id: bucketId,
+      });
+      if (trialRpcErr) {
+        console.warn(`[rewrite] anonymous trial RPC failed: ${trialRpcErr.message}`);
+        return jsonError("Trial quota check failed", 500, trialRpcErr.message);
+      }
+      if (allowed !== true) {
+        return new Response(
+          JSON.stringify({ error: "trial_quota_exceeded", type: "rewrite" }),
+          { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+    }
+
+    const todayUtc = new Date().toISOString().slice(0, 10);
+
+    const { data: subRow } = await supabase
+      .from("subscriptions")
+      .select("tier")
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    const tier = (subRow as { tier?: string } | null)?.tier ?? "free";
+
+    const sentenceLimit = isAnon
+      ? null
+      : tier === "free"
+        ? FREE_TIER_DAILY_SENTENCES
+        : tier === "pro"
+          ? PRO_TIER_DAILY_SENTENCES
+          : null;
+
+    if (sentenceLimit != null) {
+      const { data: usageRow } = await supabase
+        .from("daily_usage")
+        .select("sentences_used")
+        .eq("user_id", userId)
+        .eq("date", todayUtc)
+        .maybeSingle();
+
+      const used = (usageRow as { sentences_used?: number } | null)?.sentences_used ?? 0;
+      if (used >= sentenceLimit) {
+        return new Response(
+          JSON.stringify({
+            error: "quota_exceeded",
+            type: "sentences",
+            used,
+            limit: sentenceLimit,
+          }),
+          { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+    }
 
     // Load agent if specified
     let loadedAgent: Record<string, unknown> | null = null;
@@ -77,10 +181,7 @@ Deno.serve(async (req) => {
         return n.includes("synonym sensei") || n.includes("synonym monkey");
       })();
 
-    const sentenceCtx =
-      typeof sentenceContext === "string" && sentenceContext.trim()
-        ? sentenceContext.trim()
-        : "";
+    const sentenceCtx = rawSentenceCtx.trim() ? rawSentenceCtx.trim() : "";
 
     const useSentenceSynonymMode = isSynonymSpecialist && sentenceCtx.length > 0;
 
@@ -177,6 +278,20 @@ Output plain prose only: no markdown (no asterisks, underscores, or backticks us
     }
 
     console.log(`[rewrite] success, outputLen=${rewrite.length}`);
+
+    if (sentenceLimit != null) {
+      const delta = sentencesFromRewriteOutput(rewrite);
+      if (delta > 0) {
+        const { error: rpcErr } = await supabase.rpc("add_daily_sentences", {
+          p_user_id: userId,
+          p_date: todayUtc,
+          p_delta: delta,
+        });
+        if (rpcErr) {
+          console.warn(`[rewrite] add_daily_sentences failed: ${rpcErr.message}`);
+        }
+      }
+    }
 
     return new Response(JSON.stringify({ rewrite }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },

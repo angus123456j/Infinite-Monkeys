@@ -14,6 +14,11 @@ export interface SuggestionBlockAttrs {
   title: string;
   text: string;
   error: string | null;
+  /** Optional: where the affected selection lives in the doc (for undo/refresh resilience). */
+  selFrom?: number | null;
+  selTo?: number | null;
+  /** Optional: root doc action. */
+  docAction?: "rewrite" | "expand" | null;
 }
 
 export interface SuggestionBlockOptions {
@@ -194,6 +199,9 @@ export const SuggestionBlock = Node.create<SuggestionBlockOptions>({
       title: { default: "Rewritten:" },
       text: { default: "" },
       error: { default: null },
+      selFrom: { default: null },
+      selTo: { default: null },
+      docAction: { default: null },
     };
   },
 

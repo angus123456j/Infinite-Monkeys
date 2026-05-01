@@ -2,18 +2,27 @@ import type { Express, Request, Response } from "express";
 import type rateLimit from "express-rate-limit";
 import { getScrutinyClassifier, normalizeAiProbability } from "./model.js";
 import { splitSentences } from "./splitSentences.js";
+import type { ScrutinyTrialBlock } from "./anonTrialQuota.js";
 
 type Limiter = ReturnType<typeof rateLimit>;
+
+type TrialEnforcer = (req: Request) => Promise<ScrutinyTrialBlock | null>;
 
 export function registerScrutinyRoutes(options: {
   app: Express;
   limiter: Limiter;
   authMiddleware: (req: Request, res: Response, next: () => void) => void;
+  enforceAnonymousScrutinyTrialQuota: TrialEnforcer;
 }) {
-  const { app, limiter, authMiddleware } = options;
+  const { app, limiter, authMiddleware, enforceAnonymousScrutinyTrialQuota } = options;
 
   app.post("/api/scrutiny/detect", limiter, authMiddleware, async (req, res) => {
     try {
+      const trialBlock = await enforceAnonymousScrutinyTrialQuota(req);
+      if (trialBlock) {
+        return res.status(trialBlock.status).json(trialBlock.body);
+      }
+
       const text = typeof req.body?.text === "string" ? req.body.text : "";
       const mode =
         req.body?.mode === "selection" || req.body?.mode === "document"

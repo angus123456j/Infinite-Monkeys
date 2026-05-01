@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Editor as TiptapEditor } from "@tiptap/react";
 import { Decoration, type EditorView } from "@tiptap/pm/view";
-import { apiFetch } from "../lib/api";
+import { apiFetch, ScrutinyTrialQuotaError } from "../lib/api";
+import { supabase } from "../lib/supabase";
 import { setScrutinyDecorations } from "../extensions/ScrutinyHighlight";
+import type { SubscriptionTier } from "../lib/subscriptions";
+import { dailyScrutinyLimitForTier } from "../lib/freeTierLimits";
+import { getDailyUsage, incrementScrutinyScans } from "../lib/usage";
 
 type ScrutinySentence = {
   text: string;
@@ -25,8 +29,12 @@ interface ScrutinyPanelProps {
   expanded: boolean;
   onExpandedChange: (next: boolean) => void;
   trialMode?: boolean;
+  /** When true with trialMode, server enforces scrutiny quota; skip client onTrialConsume before scan. */
+  trialSkipClientQuota?: boolean;
+  subscriptionTier?: SubscriptionTier;
   onTrialConsume?: (action: "scrutiny-selection" | "scrutiny-document") => boolean;
   onTrialGated?: (action: "scrutiny-selection" | "scrutiny-document") => void;
+  onUpgradeRequired?: () => void;
 }
 
 function safeGetEditorViewDom(editor: TiptapEditor): HTMLElement | null {
@@ -123,8 +131,11 @@ function ScrutinyPanel({
   expanded,
   onExpandedChange,
   trialMode = false,
+  trialSkipClientQuota = false,
+  subscriptionTier,
   onTrialConsume,
   onTrialGated,
+  onUpgradeRequired,
 }: ScrutinyPanelProps) {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ScrutinyResponse | null>(null);
@@ -225,6 +236,21 @@ function ScrutinyPanel({
 
   async function run(mode: "selection" | "document") {
     if (!editor || loading) return;
+    const tier = subscriptionTier ?? "free";
+    const scrutinyLimit = !trialMode ? dailyScrutinyLimitForTier(tier) : null;
+    if (scrutinyLimit != null) {
+      try {
+        const u = await getDailyUsage();
+        if (u.scrutiny_scans >= scrutinyLimit) {
+          onUpgradeRequired?.();
+          return;
+        }
+      } catch (e) {
+        // Usually missing `daily_usage` migration on this project, or a transient API error.
+        // Do not block Scrutiny; quota enforcement resumes once getDailyUsage works.
+        console.warn("[ScrutinyPanel] getDailyUsage failed (quota pre-check skipped):", e);
+      }
+    }
     setLoading(true);
     setError(null);
     setActiveSentenceKey(null);
@@ -266,10 +292,25 @@ function ScrutinyPanel({
         return;
       }
 
+      const { data: sess } = await supabase.auth.getSession();
+      const authHeaders: Record<string, string> = {};
+      if (sess.session?.access_token) {
+        authHeaders.Authorization = `Bearer ${sess.session.access_token}`;
+      }
+
       const resp = await apiFetch<ScrutinyResponse>("/api/scrutiny/detect", {
         method: "POST",
+        headers: authHeaders,
         body: JSON.stringify({ text, mode }),
       });
+
+      if (scrutinyLimit != null) {
+        try {
+          await incrementScrutinyScans();
+        } catch {
+          /* non-fatal: scan already succeeded */
+        }
+      }
 
       if (mode === "selection") lastSelectionScanRangeRef.current = { from, to };
       else lastSelectionScanRangeRef.current = null;
@@ -278,9 +319,14 @@ function ScrutinyPanel({
 
       // Highlights only after the user clicks a sentence in the list (not immediately after scan).
       setScrutinyDecorations(editor, []);
-    } catch (e) {
+    } catch (e: unknown) {
       lastSelectionScanRangeRef.current = null;
-      setError("Scrutiny scan failed. Try again.");
+      if (e instanceof ScrutinyTrialQuotaError) {
+        onTrialGated?.(mode === "document" ? "scrutiny-document" : "scrutiny-selection");
+        setError("Trial limit for this period. Sign up to continue.");
+      } else {
+        setError("Scrutiny scan failed. Try again.");
+      }
       setResult(null);
       setActiveSentenceKey(null);
       if (editor) setScrutinyDecorations(editor, []);
@@ -323,7 +369,7 @@ function ScrutinyPanel({
                 pendingScanSelectionRef.current = resolveScanSelectionRange();
               }}
               onClick={() => {
-                if (trialMode && onTrialConsume) {
+                if (trialMode && !trialSkipClientQuota && onTrialConsume) {
                   const ok = onTrialConsume("scrutiny-selection");
                   if (!ok) {
                     onTrialGated?.("scrutiny-selection");
@@ -348,7 +394,7 @@ function ScrutinyPanel({
               data-onboard="scrutiny-scan-document"
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
-                if (trialMode && onTrialConsume) {
+                if (trialMode && !trialSkipClientQuota && onTrialConsume) {
                   const ok = onTrialConsume("scrutiny-document");
                   if (!ok) {
                     onTrialGated?.("scrutiny-document");

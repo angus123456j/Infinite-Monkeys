@@ -1,31 +1,65 @@
-import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "../lib/supabase";
+import { redirectToStripeCheckout } from "../lib/checkout";
 
 export default function FreeSignupPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const checkoutAttemptRef = useRef(false);
 
-  const redirectTo = useMemo(() => `${window.location.origin}/drive`, []);
+  const planParam = searchParams.get("plan");
+  const selectedPlan = planParam === "pro" || planParam === "infinite" ? planParam : null;
+  /** After auth, paid users go straight to Stripe — not the intermediate /pricing page. */
+  const postAuthPath = "/drive";
+  const redirectTo = useMemo(() => {
+    if (selectedPlan) {
+      return `${window.location.origin}/signup/free?plan=${selectedPlan}`;
+    }
+    return `${window.location.origin}${postAuthPath}`;
+  }, [postAuthPath, selectedPlan]);
 
   useEffect(() => {
     let mounted = true;
-    supabase.auth.getSession().then(({ data }) => {
+    let cancelled = false;
+
+    async function routeAfterSession() {
+      const { data } = await supabase.auth.getSession();
       if (!mounted) return;
-      if (data.session) navigate("/drive", { replace: true });
-    });
+      if (!data.session) return;
+      if (selectedPlan) {
+        if (checkoutAttemptRef.current) return;
+        checkoutAttemptRef.current = true;
+        try {
+          await redirectToStripeCheckout(selectedPlan);
+          return;
+        } catch {
+          checkoutAttemptRef.current = false;
+          if (!cancelled) {
+            navigate(`/pricing?plan=${selectedPlan}`, { replace: true });
+          }
+          return;
+        }
+      }
+      navigate(postAuthPath, { replace: true });
+    }
+
+    void routeAfterSession();
     const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
-      if (session) navigate("/drive", { replace: true });
+      if (!session) return;
+      void routeAfterSession();
     });
     return () => {
       mounted = false;
+      cancelled = true;
       sub.subscription.unsubscribe();
     };
-  }, [navigate]);
+  }, [navigate, postAuthPath, selectedPlan]);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -43,7 +77,7 @@ export default function FreeSignupPage() {
         email: emailTrimmed,
         password,
         options: {
-          emailRedirectTo: `${window.location.origin}/drive`,
+          emailRedirectTo: `${window.location.origin}/signup/free${selectedPlan ? `?plan=${selectedPlan}` : ""}`,
         },
       });
       if (authError) throw authError;
@@ -54,9 +88,21 @@ export default function FreeSignupPage() {
 
       if (data.session) {
         // Email confirmation disabled in Supabase — user is already signed in.
-        navigate("/drive", { replace: true });
+        if (selectedPlan) {
+          try {
+            await redirectToStripeCheckout(selectedPlan);
+            return;
+          } catch {
+            navigate(`/pricing?plan=${selectedPlan}`, { replace: true });
+            return;
+          }
+        }
+        navigate(postAuthPath, { replace: true });
       } else {
-        navigate(`/confirm-email?email=${encodeURIComponent(user.email)}`, { replace: true });
+        const q = new URLSearchParams();
+        q.set("email", user.email);
+        if (selectedPlan) q.set("plan", selectedPlan);
+        navigate(`/confirm-email?${q.toString()}`, { replace: true });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create account.");
@@ -100,6 +146,11 @@ export default function FreeSignupPage() {
           </div>
 
           <h1 className="signup-auth__headline">Create your account</h1>
+          {selectedPlan ? (
+            <p className="signup-auth__hint">
+              You selected <strong>{selectedPlan}</strong>. After account creation, we will take you to billing.
+            </p>
+          ) : null}
 
           <main className="signup-auth__card" aria-label="Sign up">
             <form onSubmit={onSubmit}>

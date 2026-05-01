@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { supabase } from "../lib/supabase";
 import Editor from "../components/Editor";
 import DocMenuBar from "../components/DocMenuBar";
 import FindReplaceModal from "../components/FindReplaceModal";
@@ -9,8 +10,11 @@ import EditorContext from "../contexts/EditorContext";
 import { getDocument, updateDocTitle, saveDoc } from "../lib/docs";
 import { parseMonkeyTimeline } from "../lib/monkeyTimeline";
 import type { AgentInvocationLogEntry } from "../components/AgentInvocationTimeline";
-import { createContext } from "../lib/contexts";
+import { createContext, listContexts } from "../lib/contexts";
 import type { Editor as TiptapEditor } from "@tiptap/react";
+import { getMySubscription, type SubscriptionTier } from "../lib/subscriptions";
+import UpgradeModal from "../components/UpgradeModal";
+import { contextLimitForTier } from "../lib/freeTierLimits";
 
 /** True when the doc is still the default empty state (new or never edited in a meaningful way). */
 function isEffectivelyEmptyDocument(
@@ -40,6 +44,10 @@ export default function EditorPage() {
   const [wordCountOpen, setWordCountOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [exportingToContext, setExportingToContext] = useState(false);
+  const [sessionReady, setSessionReady] = useState(false);
+  const [subscriptionTier, setSubscriptionTier] = useState<SubscriptionTier>("free");
+  const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
+  const [upgradeReason, setUpgradeReason] = useState("");
 
   const collapseSidePanelsOnMount = useMemo(
     () => isEffectivelyEmptyDocument(initialContent, initialMonkeyTimeline),
@@ -47,10 +55,51 @@ export default function EditorPage() {
   );
 
   useEffect(() => {
+    let mounted = true;
+    void supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      if (!data.session) {
+        navigate("/?skipIntro=1", { replace: true });
+        return;
+      }
+      setSessionReady(true);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
+      if (!session) {
+        navigate("/?skipIntro=1", { replace: true });
+        setSessionReady(false);
+      } else {
+        setSessionReady(true);
+      }
+    });
+    return () => {
+      mounted = false;
+      sub.subscription.unsubscribe();
+    };
+  }, [navigate]);
+
+  useEffect(() => {
+    if (!sessionReady) return;
+    let cancelled = false;
+    void getMySubscription()
+      .then((row) => {
+        if (!cancelled) setSubscriptionTier(row?.tier ?? "free");
+      })
+      .catch(() => {
+        if (!cancelled) setSubscriptionTier("free");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionReady]);
+
+  useEffect(() => {
+    if (!sessionReady) return;
     if (!id) {
       setLoading(false);
       return;
     }
+    setLoading(true);
     getDocument(id)
       .then((doc) => {
         if (doc) {
@@ -61,7 +110,7 @@ export default function EditorPage() {
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, [id]);
+  }, [id, sessionReady]);
 
   const handleTitleChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -81,6 +130,23 @@ export default function EditorPage() {
 
   const handleExportToContext = useCallback(async () => {
     if (!editor || exportingToContext) return;
+    const ctxLimit = contextLimitForTier(subscriptionTier);
+    if (ctxLimit != null) {
+      try {
+        const contexts = await listContexts();
+        if (contexts.length >= ctxLimit) {
+          setUpgradeReason(
+            subscriptionTier === "free"
+              ? `Free accounts can have up to ${ctxLimit} context books in the library. Delete a context from the drive or upgrade to export another.`
+              : `Your plan can have up to ${ctxLimit} context books in the library. Delete a context from the drive or upgrade to export another.`,
+          );
+          setUpgradeModalOpen(true);
+          return;
+        }
+      } catch (err) {
+        console.error("Failed to check context library size:", err);
+      }
+    }
     setExportingToContext(true);
     try {
       const html = editor.getHTML();
@@ -94,7 +160,7 @@ export default function EditorPage() {
       console.error("Failed to export to context:", err);
       setExportingToContext(false);
     }
-  }, [editor, exportingToContext, navigate, title]);
+  }, [editor, exportingToContext, navigate, subscriptionTier, title]);
 
   if (loading) {
     return (
@@ -158,6 +224,7 @@ export default function EditorPage() {
           collapseSidePanelsOnMount={collapseSidePanelsOnMount}
           initialContent={initialContent}
           initialMonkeyTimeline={initialMonkeyTimeline}
+          subscriptionTier={subscriptionTier}
           onSaveContent={handleSaveContent}
           onEditorReady={setEditor}
         />
@@ -169,6 +236,11 @@ export default function EditorPage() {
         <WordCountModal editor={editor} onClose={() => setWordCountOpen(false)} />
       )}
       {shortcutsOpen && <KeyboardShortcutsModal onClose={() => setShortcutsOpen(false)} />}
+      <UpgradeModal
+        open={upgradeModalOpen}
+        reason={upgradeReason}
+        onClose={() => setUpgradeModalOpen(false)}
+      />
     </EditorContext.Provider>
   );
 }

@@ -23,19 +23,22 @@ const ABOUT_PANELS: Array<{
     title: "Why Infinite Monkeys",
     desc: `Generic chat UIs make you re-explain your project every time. Here, the document is the stage: highlight only what you want to change, summon help on that slice, and iterate in small, reversible steps so your voice stays yours.
 
-What’s different is how it pairs with the Context Library and Monkey Agents—persistent memory plus specialists—so you’re not fighting one-size-fits-all polish when you want craft, clarity, and control.`,
+The unique aspect is its integration with the Context Library and Monkey Agents, offering persistent memory and specialized capabilities. This means you avoid generic polish when your goal is craft, clarity, and control. Because expert agents handle every task and detail, you gain confidence and creative freedom, knowing you steer the true direction.`,
   },
   {
     id: 2,
     title: "Context Library",
-    desc: `Contexts are reusable bundles of what the model should “remember”: tone, world rules, client voice, citations, hard bans, and soft preferences. Tag them, refine them, and attach one or many when you rewrite—no pasting the same brief into chat again and again.
 
-That’s how you beat tone drift and “almost right” drafts: every pass stays aligned with *your* canon and constraints instead of slowly erasing them.`,
+    desc: `Contexts are reusable blocks of information you want the model to work from. That could be research papers, your resume, a grading rubric, an essay structure, notes, or even raw background info.
+    
+Instead of re-explaining everything every time, you attach the relevant context and the model uses it as its source of truth while writing or rewriting.
+
+This is how you avoid generic output. The model is not guessing anymore, it is grounded in your actual material, your constraints, and the exact information you care about.`,
   },
   {
     id: 3,
     title: "Monkey Agents",
-    desc: `One assistant can’t be best at everything. Agents are specialists—diction, dialogue, continuity, structure, careful tightening—each with its own role, behavior, and limits. Swap agents on the same selection to compare real alternatives, not one house style.
+    desc: `One assistant can’t be best at everything. Agents are specialists in diction, dialogue, continuity, structure, and careful tightening, each with its own role, behavior, and limits. Swap agents on the same selection to compare real alternatives, not one in-house style.
 
 You shape agents over time; Context Library carries the shared brief. Together it feels less like autocorrect and more like a fast, on-brief writers’ room.`,
   },
@@ -83,10 +86,12 @@ export default function HomePage() {
     let mounted = true;
     supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
-      if (data.session) navigate("/drive", { replace: true });
+      const u = data.session?.user;
+      if (u && !u.is_anonymous) navigate("/drive", { replace: true });
     });
     const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
-      if (session) navigate("/drive", { replace: true });
+      const u = session?.user;
+      if (u && !u.is_anonymous) navigate("/drive", { replace: true });
     });
     return () => {
       mounted = false;
@@ -181,6 +186,7 @@ export default function HomePage() {
       const target2 = line2UnlockedRef.current
         ? Math.floor(((progress - line1End) / (1 - line1End)) * TYPEWRITER_LINE2.length)
         : 0;
+
       setVisibleChars1((prev) => Math.min(target1, prev + 1));
       setVisibleChars2((prev) => Math.min(target2, prev + 1));
     };
@@ -401,8 +407,8 @@ export default function HomePage() {
                 </span>
               </h2>
               <p className="home-about-lead">
-                A document-first editor with a context library and reusable monkey agents—so
-                each pass stays on-brief instead of drifting into generic polish.
+              A document-first editor featuring a context library and reusable monkey agents,
+              so each pass remains aligned with the brief without slipping into generic polish.
               </p>
             </div>
 
@@ -426,13 +432,8 @@ export default function HomePage() {
               cite="https://en.wikipedia.org/wiki/Infinite_monkey_theorem"
             >
               <p>
-                The infinite monkey theorem holds that a monkey striking keys at random on a
-                typewriter for an endless duration would, with probability one, eventually produce
-                any finite text—{" "}
-                <span lang="la">Hamlet</span>, a proof, a laundry list—hidden somewhere in the
-                unbounded stream of letters; in any mortal span the odds remain vanishingly small,
-                yet the image endures: infinity, chance, and the stubborn idea that given long
-                enough, even noise might stumble into sense.
+              The infinite monkey theorem says a monkey typing forever would eventually produce any text, such as Hamlet or a laundry list, buried in endless random characters. In a human lifetime, the odds are minuscule, 
+              but the idea is compelling: writing becomes discovery, not creation, as if we are searching through infinite noise for something already there. - Monkey 313
               </p>
             </blockquote>
           </div>

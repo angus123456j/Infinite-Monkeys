@@ -47,6 +47,22 @@ function toDocMeta(d: DbDocument): DocMeta {
 }
 
 const FOLDERS_STORAGE_KEY = "infinite-monkeys-folders";
+const FOLDERS_OWNER_STORAGE_KEY = "infinite-monkeys-folders-owner";
+
+/**
+ * Folders are stored in localStorage (for now). Since localStorage is shared across
+ * accounts in the same browser, we scope the stored folder tree to the current user.
+ */
+export function ensureFolderStorageForUser(userId: string) {
+  try {
+    const prev = localStorage.getItem(FOLDERS_OWNER_STORAGE_KEY);
+    if (prev && prev === userId) return;
+    localStorage.setItem(FOLDERS_OWNER_STORAGE_KEY, userId);
+    localStorage.removeItem(FOLDERS_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
 
 function loadFolders(): FolderMeta[] {
   try {
