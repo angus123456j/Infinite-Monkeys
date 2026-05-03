@@ -13,30 +13,44 @@ function postConfirmPath(searchParams: URLSearchParams): string {
 export default function ConfirmEmailPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const mode = searchParams.get("mode")?.trim() || "";
+  const hold = searchParams.get("hold") === "1";
   const email = searchParams.get("email")?.trim() || "";
   const nextPath = postConfirmPath(searchParams);
 
   const [resendLoading, setResendLoading] = useState(false);
   const [resendMessage, setResendMessage] = useState<string | null>(null);
+  const [sessionEmail, setSessionEmail] = useState<string>("");
 
   useEffect(() => {
     let mounted = true;
     supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
-      if (data.session) navigate(nextPath, { replace: true });
+      const sess = data.session;
+      const signedInEmail = sess?.user?.email ?? "";
+      if (signedInEmail) setSessionEmail(signedInEmail);
+      // Default behavior (email confirmation link): once a session exists, continue.
+      // OAuth mode: keep the user on this page for a consistent step.
+      if (sess && mode !== "oauth" && !hold) navigate(nextPath, { replace: true });
     });
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session) navigate(nextPath, { replace: true });
+      const signedInEmail = session?.user?.email ?? "";
+      if (signedInEmail) setSessionEmail(signedInEmail);
+      if (session && mode !== "oauth" && !hold) navigate(nextPath, { replace: true });
     });
     return () => {
       mounted = false;
       sub.subscription.unsubscribe();
     };
-  }, [navigate, nextPath]);
+  }, [navigate, nextPath, mode, hold]);
 
   const onResend = useCallback(async () => {
     if (!email) {
       setResendMessage("We don’t have your email on this page. Go back to sign up and try again.");
+      return;
+    }
+    if (mode === "oauth") {
+      setResendMessage("Google sign-in is already verified. Continue to the Drive.");
       return;
     }
     setResendLoading(true);
@@ -66,29 +80,48 @@ export default function ConfirmEmailPage() {
 
           <main className="signup-auth__card" aria-label="Email confirmation">
             <p style={{ margin: "0 0 1rem", lineHeight: 1.5 }}>
-              We’ve sent a confirmation link
-              {email ? (
+              {mode === "oauth" ? (
+                <>
+                  You’re signed in with{" "}
+                  <strong style={{ fontWeight: 600 }}>{sessionEmail || "your Google account"}</strong>.
+                  You can continue to the Drive.
+                </>
+              ) : (
+                <>
+                  We’ve sent a confirmation link
+                  {email ? (
                 <>
                   {" "}
                   to <strong style={{ fontWeight: 600 }}>{email}</strong>
                 </>
-              ) : null}
-              . Open the email and use the confirmation link—you’ll be signed in and{" "}
-              {searchParams.get("plan") === "pro" || searchParams.get("plan") === "infinite" ? (
+                  ) : null}
+                  . Open the email and use the confirmation link—you’ll be signed in and{" "}
+                  {searchParams.get("plan") === "pro" || searchParams.get("plan") === "infinite" ? (
                 <>
                   taken to Stripe checkout for <strong>{searchParams.get("plan")}</strong>
                 </>
-              ) : (
+                  ) : (
                 <>taken straight to the Drive</>
+                  )}
+                  . You can close this tab until then.
+                </>
               )}
-              . You can close this tab until then.
             </p>
-            {email ? (
+            {mode !== "oauth" && email ? (
               <p className="signup-auth__fine" style={{ margin: "0 0 1rem" }}>
                 The link can take a few minutes. Check spam if you don’t see it.
               </p>
             ) : null}
-            {email ? (
+            {mode === "oauth" ? (
+              <button
+                type="button"
+                className="signup-auth__primary"
+                style={{ width: "100%" }}
+                onClick={() => navigate(nextPath, { replace: true })}
+              >
+                Continue to Drive
+              </button>
+            ) : email ? (
               <button
                 type="button"
                 className="signup-auth__primary"

@@ -740,8 +740,22 @@ export default function TrialOnboardingTour({
         <div className="im-tour__body">{step.body}</div>
 
         {step.showVideoPlaceholder && (
-          <div className="im-tour__video" aria-label="Video placeholder">
-            Video placeholder
+          <div className="im-tour__video" aria-label="Orchestrator details">
+            <div style={{ fontWeight: 600, marginBottom: 10 }}>What it does</div>
+            <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.45 }}>
+              <li>
+                The orchestrator layer dynamically selects and calls the most relevant agents
+                based on your highlighted text and intent
+              </li>
+              <li>
+                It can chain multiple agents together, deciding the order and combining their
+                outputs into a cohesive result
+              </li>
+              <li>
+                It adapts in real time, adjusting which agents are used as your writing or
+                context changes
+              </li>
+            </ul>
           </div>
         )}
 

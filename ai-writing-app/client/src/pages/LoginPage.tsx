@@ -14,7 +14,9 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const redirectTo = useMemo(() => `${window.location.origin}/drive`, []);
+  // For OAuth, land on our confirm screen first (even though Google emails are already verified),
+  // so the user sees a consistent "check your email / you're in" step.
+  const redirectTo = useMemo(() => `${window.location.origin}/confirm-email?mode=oauth`, []);
 
   useEffect(() => {
     let mounted = true;
