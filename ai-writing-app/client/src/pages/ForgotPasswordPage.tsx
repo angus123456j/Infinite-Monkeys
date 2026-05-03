@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
+import { isRegisteredSession } from "../lib/auth";
 
 /** Supabase returns 429 when auth email rate limits are hit (reset, signup, magic link, etc.). */
 function formatPasswordResetError(err: unknown): string {
@@ -34,7 +35,7 @@ export default function ForgotPasswordPage() {
     let mounted = true;
     supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
-      if (data.session) navigate("/drive", { replace: true });
+      if (isRegisteredSession(data.session)) navigate("/drive", { replace: true });
     });
     return () => {
       mounted = false;

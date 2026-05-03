@@ -18,10 +18,12 @@ export default function FreeSignupPage() {
   /** After auth, paid users go straight to Stripe — not the intermediate /pricing page. */
   const postAuthPath = "/drive";
   const redirectTo = useMemo(() => {
-    if (selectedPlan) {
-      return `${window.location.origin}/signup/free?plan=${selectedPlan}`;
-    }
-    return `${window.location.origin}${postAuthPath}`;
+    // For Google OAuth, always land on our "confirm" screen first for a consistent onboarding step.
+    // (Google accounts are already verified; this is not an email verification step.)
+    const q = new URLSearchParams();
+    q.set("mode", "oauth");
+    if (selectedPlan) q.set("plan", selectedPlan);
+    return `${window.location.origin}/confirm-email?${q.toString()}`;
   }, [postAuthPath, selectedPlan]);
 
   useEffect(() => {
