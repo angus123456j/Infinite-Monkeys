@@ -5,6 +5,7 @@ import EditorContext from "../contexts/EditorContext";
 import type { Editor as TiptapEditor } from "@tiptap/react";
 import TrialOnboardingTour from "../components/TrialOnboardingTour";
 import RouteErrorBoundary from "../components/RouteErrorBoundary";
+import ViewportScale from "../components/ViewportScale";
 import { supabase } from "../lib/supabase";
 import { shortcut } from "../lib/shortcuts";
 
@@ -155,46 +156,48 @@ export default function TrialEditorPage() {
   return (
     <RouteErrorBoundary label="Free trial">
       <EditorContext.Provider value={editor}>
-        <div className="app">
-          <TrialOverModal open={paywallOpen} onClose={() => setPaywallOpen(false)} />
-          <TrialOnboardingTour
-            startMode={autoIntro ? "immediate" : "after-interaction"}
-            forceOpen={autoIntro}
-            targetsReady={uiPrimed && anonReady}
-          />
-          <div className="title-bar im-trial-titlebar">
-            <Link to="/?skipIntro=1" className="doc-icon-link" title="Back to home">
-              <svg className="doc-icon" width="24" height="30" viewBox="0 0 24 24" fill="#4285f4">
-                <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2" fill="none" />
-              </svg>
-            </Link>
-            <div className="title-area">
-              <span className="doc-title im-trial-title">Free trial</span>
-            </div>
-            <div className="title-bar-actions">
-              <Link to="/signup" className="title-bar-export-btn im-trial-signup-btn">
-                Sign up to save
+        <ViewportScale>
+          <div className="app">
+            <TrialOverModal open={paywallOpen} onClose={() => setPaywallOpen(false)} />
+            <TrialOnboardingTour
+              startMode={autoIntro ? "immediate" : "after-interaction"}
+              forceOpen={autoIntro}
+              targetsReady={uiPrimed && anonReady}
+            />
+            <div className="title-bar im-trial-titlebar">
+              <Link to="/?skipIntro=1" className="doc-icon-link" title="Back to home">
+                <svg className="doc-icon" width="24" height="30" viewBox="0 0 24 24" fill="#4285f4">
+                  <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2" fill="none" />
+                </svg>
               </Link>
+              <div className="title-area">
+                <span className="doc-title im-trial-title">Free trial</span>
+              </div>
+              <div className="title-bar-actions">
+                <Link to="/signup" className="title-bar-export-btn im-trial-signup-btn">
+                  Sign up to save
+                </Link>
+              </div>
             </div>
-          </div>
 
-          {uiPrimed && anonReady ? (
-            <Editor
-              initialContent={`<p><strong>Welcome.</strong> This is a free trial document — nothing here is saved.</p>
+            {uiPrimed && anonReady ? (
+              <Editor
+                initialContent={`<p><strong>Welcome.</strong> This is a free trial document — nothing here is saved.</p>
 <p>Try rewriting: highlight the paragraph below, then press <strong>${shortcut("K")}</strong>.</p>
 <p>Over time, these aquatic beings develop from specks that are barely visible into creatures that can reach up to two inches in length. They flourish in small, artificial habitats, needing little more than water and an occasional meal. Their resilience and low‑maintenance way of life offer us a fascinating glimpse into the survival strategies of life here on Earth.</p>
 <p><em>Playground prompts:</em> “make this more vivid”, “cut 30%”, “make it sound like a documentary narrator”, “simplify for a 12‑year‑old”.</p>
 <p></p>`}
-              docId={undefined}
-              timelineDocumentId={undefined}
-              onSaveContent={undefined}
-              onEditorReady={setEditor}
-              trialMode
-              trialSkipClientQuota
-              onTrialGated={onTrialGated}
-            />
-          ) : null}
-        </div>
+                docId={undefined}
+                timelineDocumentId={undefined}
+                onSaveContent={undefined}
+                onEditorReady={setEditor}
+                trialMode
+                trialSkipClientQuota
+                onTrialGated={onTrialGated}
+              />
+            ) : null}
+          </div>
+        </ViewportScale>
       </EditorContext.Provider>
     </RouteErrorBoundary>
   );

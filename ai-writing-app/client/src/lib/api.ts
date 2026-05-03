@@ -32,80 +32,14 @@ export async function apiFetch<T>(
   options?: RequestInit
 ): Promise<T> {
   const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
-  // #region agent log
-  {
-    let urlHost = "";
-    try {
-      urlHost = new URL(url).host;
-    } catch {
-      /* ignore */
-    }
-    fetch("http://127.0.0.1:7243/ingest/e7e07eac-9415-495e-a623-d26d2f751fe5", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "6fdb8f" },
-      body: JSON.stringify({
-        sessionId: "6fdb8f",
-        hypothesisId: "H1",
-        location: "client/src/lib/api.ts:apiFetch",
-        message: "api_fetch_before",
-        data: {
-          path,
-          urlHost,
-          hasApiBase: Boolean(explicitApiUrl),
-          pageOrigin: typeof window !== "undefined" ? window.location.origin : "",
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-  }
-  // #endregion
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        ...(sendClientSecretHeader ? { "X-Shared-Secret": SHARED_SECRET! } : {}),
-        ...options?.headers,
-      },
-    });
-  } catch (e: unknown) {
-    // #region agent log
-    const err =
-      e instanceof Error
-        ? { name: e.name, message: e.message }
-        : { name: "unknown", message: String(e) };
-    fetch("http://127.0.0.1:7243/ingest/e7e07eac-9415-495e-a623-d26d2f751fe5", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "6fdb8f" },
-      body: JSON.stringify({
-        sessionId: "6fdb8f",
-        hypothesisId: "H4",
-        location: "client/src/lib/api.ts:apiFetch",
-        message: "api_fetch_network_error",
-        data: { path, ...err },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
-    throw e;
-  }
-  // #region agent log
-  if (!res.ok) {
-    fetch("http://127.0.0.1:7243/ingest/e7e07eac-9415-495e-a623-d26d2f751fe5", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "6fdb8f" },
-      body: JSON.stringify({
-        sessionId: "6fdb8f",
-        hypothesisId: "H5",
-        location: "client/src/lib/api.ts:apiFetch",
-        message: "api_fetch_http_error",
-        data: { path, status: res.status, statusText: res.statusText },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-  }
-  // #endregion
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(sendClientSecretHeader ? { "X-Shared-Secret": SHARED_SECRET! } : {}),
+      ...options?.headers,
+    },
+  });
   if (!res.ok) {
     if (res.status === 402) {
       let j: { error?: string } = {};

@@ -5,7 +5,6 @@
  * CRUD and LLM traffic live on Supabase; this process only needs scrutiny env vars.
  */
 import "./env.js";
-import { appendFileSync } from "node:fs";
 import express, { Request, Response, NextFunction } from "express";
 import rateLimit from "express-rate-limit";
 import cors from "cors";
@@ -82,22 +81,4 @@ app.listen(listenPort, "0.0.0.0", () => {
   console.log(
     `[scrutiny] auth: ${SHARED_SECRET ? "X-Shared-Secret required" : "disabled (local dev)"}`,
   );
-  // #region agent log
-  try {
-    const line = JSON.stringify({
-      sessionId: "6fdb8f",
-      hypothesisId: "H2",
-      location: "server/src/index.ts:listen",
-      message: "scrutiny_server_listen",
-      data: { port: listenPort, corsCount: corsOrigins.length, hasSharedSecret: Boolean(SHARED_SECRET) },
-      timestamp: Date.now(),
-    });
-    appendFileSync(
-      "/Users/angoos/Documents/infinite monkeys/.cursor/debug-6fdb8f.log",
-      line + "\n",
-    );
-  } catch {
-    /* ignore: path only valid on dev machine */
-  }
-  // #endregion
 });

@@ -1,0 +1,5 @@
+# Scrutiny service: set this Railway service’s **Root Directory** to `ai-writing-app`
+# (monorepo parent has no package.json / Dockerfile at repo root).
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile.scrutiny"

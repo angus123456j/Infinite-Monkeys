@@ -34,6 +34,29 @@ body {
   height: 100vh;
 }
 
+/* Uniform scale for editor routes on small laptops (see ViewportScale.tsx) */
+.viewport-scale-root {
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  position: relative;
+}
+
+.viewport-scale-stage {
+  transform-origin: 0 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Inside the scaled stage, vh is still viewport-based; fill the stage instead */
+.viewport-scale-stage > .app {
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
+}
+
 /* Blank bar above header — reserve space for custom content */
 
 .app-top-bar {

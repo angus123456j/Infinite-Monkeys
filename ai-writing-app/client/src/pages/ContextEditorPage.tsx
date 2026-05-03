@@ -6,6 +6,7 @@ import DocMenuBar from "../components/DocMenuBar";
 import FindReplaceModal from "../components/FindReplaceModal";
 import WordCountModal from "../components/WordCountModal";
 import KeyboardShortcutsModal from "../components/KeyboardShortcutsModal";
+import ViewportScale from "../components/ViewportScale";
 import EditorContext from "../contexts/EditorContext";
 import { getContext, updateContext } from "../lib/contexts";
 import type { Editor as TiptapEditor } from "@tiptap/react";
@@ -105,65 +106,69 @@ export default function ContextEditorPage() {
 
   if (loading) {
     return (
-      <div className="app">
-        <div className="title-bar">
-          <Link to="/docs" className="doc-icon-link" title="Back to drive">
-            <svg className="doc-icon" width="24" height="30" viewBox="0 0 24 24" fill="#4285f4">
-              <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z" />
-            </svg>
-          </Link>
-          <div className="title-area">
-            <span className="doc-title">Loading…</span>
+      <ViewportScale>
+        <div className="app">
+          <div className="title-bar">
+            <Link to="/docs" className="doc-icon-link" title="Back to drive">
+              <svg className="doc-icon" width="24" height="30" viewBox="0 0 24 24" fill="#4285f4">
+                <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z" />
+              </svg>
+            </Link>
+            <div className="title-area">
+              <span className="doc-title">Loading…</span>
+            </div>
           </div>
+          <div style={{ padding: "2rem", textAlign: "center" }}>Loading context…</div>
         </div>
-        <div style={{ padding: "2rem", textAlign: "center" }}>Loading context…</div>
-      </div>
+      </ViewportScale>
     );
   }
 
   return (
     <EditorContext.Provider value={editor}>
-      <div className="app">
-        <div className="title-bar">
-          <Link to="/docs?drive=context" className="doc-icon-link" title="Back to drive">
-            <svg className="doc-icon" width="24" height="30" viewBox="0 0 24 24" fill="#4285f4">
-              <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z" />
-            </svg>
-          </Link>
-          <div className="title-area">
-            <input
-              className="doc-title"
-              value={title}
-              onChange={handleTitleChange}
-              aria-label="Context title"
-            />
-            <DocMenuBar
-              onOpenFindReplace={() => setFindReplaceOpen(true)}
-              onOpenWordCount={() => setWordCountOpen(true)}
-              onOpenKeyboardShortcuts={() => setShortcutsOpen(true)}
-            />
+      <ViewportScale>
+        <div className="app">
+          <div className="title-bar">
+            <Link to="/docs?drive=context" className="doc-icon-link" title="Back to drive">
+              <svg className="doc-icon" width="24" height="30" viewBox="0 0 24 24" fill="#4285f4">
+                <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z" />
+              </svg>
+            </Link>
+            <div className="title-area">
+              <input
+                className="doc-title"
+                value={title}
+                onChange={handleTitleChange}
+                aria-label="Context title"
+              />
+              <DocMenuBar
+                onOpenFindReplace={() => setFindReplaceOpen(true)}
+                onOpenWordCount={() => setWordCountOpen(true)}
+                onOpenKeyboardShortcuts={() => setShortcutsOpen(true)}
+              />
+            </div>
           </div>
+          <Editor
+            key={id}
+            docId={id ?? undefined}
+            initialContent={initialContent}
+            initialMonkeyTimeline={initialMonkeyTimeline}
+            subscriptionTier={subscriptionTier}
+            onSaveMonkeyTimeline={(entries) => {
+              if (id) void updateContext(id, { monkeyTimeline: entries });
+            }}
+            onSaveContent={handleSaveContent}
+            onEditorReady={setEditor}
+          />
         </div>
-        <Editor
-          key={id}
-          docId={id ?? undefined}
-          initialContent={initialContent}
-          initialMonkeyTimeline={initialMonkeyTimeline}
-          subscriptionTier={subscriptionTier}
-          onSaveMonkeyTimeline={(entries) => {
-            if (id) void updateContext(id, { monkeyTimeline: entries });
-          }}
-          onSaveContent={handleSaveContent}
-          onEditorReady={setEditor}
-        />
-      </div>
-      {findReplaceOpen && (
-        <FindReplaceModal editor={editor} onClose={() => setFindReplaceOpen(false)} />
-      )}
-      {wordCountOpen && (
-        <WordCountModal editor={editor} onClose={() => setWordCountOpen(false)} />
-      )}
-      {shortcutsOpen && <KeyboardShortcutsModal onClose={() => setShortcutsOpen(false)} />}
+        {findReplaceOpen && (
+          <FindReplaceModal editor={editor} onClose={() => setFindReplaceOpen(false)} />
+        )}
+        {wordCountOpen && (
+          <WordCountModal editor={editor} onClose={() => setWordCountOpen(false)} />
+        )}
+        {shortcutsOpen && <KeyboardShortcutsModal onClose={() => setShortcutsOpen(false)} />}
+      </ViewportScale>
     </EditorContext.Provider>
   );
 }

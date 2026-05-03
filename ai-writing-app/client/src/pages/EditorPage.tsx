@@ -14,6 +14,7 @@ import { createContext, listContexts } from "../lib/contexts";
 import type { Editor as TiptapEditor } from "@tiptap/react";
 import { getMySubscription, type SubscriptionTier } from "../lib/subscriptions";
 import UpgradeModal from "../components/UpgradeModal";
+import ViewportScale from "../components/ViewportScale";
 import { contextLimitForTier } from "../lib/freeTierLimits";
 
 /** True when the doc is still the default empty state (new or never edited in a meaningful way). */
@@ -164,83 +165,87 @@ export default function EditorPage() {
 
   if (loading) {
     return (
-      <div className="app">
-        <div className="title-bar">
-          <Link to="/docs" className="doc-icon-link" title="Back to documents">
-            <svg className="doc-icon" width="24" height="30" viewBox="0 0 24 24" fill="#4285f4">
-              <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z" />
-            </svg>
-          </Link>
-          <div className="title-area">
-            <span className="doc-title">Loading…</span>
+      <ViewportScale>
+        <div className="app">
+          <div className="title-bar">
+            <Link to="/docs" className="doc-icon-link" title="Back to documents">
+              <svg className="doc-icon" width="24" height="30" viewBox="0 0 24 24" fill="#4285f4">
+                <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z" />
+              </svg>
+            </Link>
+            <div className="title-area">
+              <span className="doc-title">Loading…</span>
+            </div>
           </div>
+          <div style={{ padding: "2rem", textAlign: "center" }}>Loading document…</div>
         </div>
-        <div style={{ padding: "2rem", textAlign: "center" }}>Loading document…</div>
-      </div>
+      </ViewportScale>
     );
   }
 
   return (
     <EditorContext.Provider value={editor}>
-      <div className="app">
-        <div className="title-bar">
-          <Link to="/docs" className="doc-icon-link" title="Back to documents">
-            <svg className="doc-icon" width="24" height="30" viewBox="0 0 24 24" fill="#4285f4">
-              <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z" />
-            </svg>
-          </Link>
-          <div className="title-area">
-            <div className="doc-title-row">
-              <input
-                className="doc-title"
-                value={title}
-                onChange={handleTitleChange}
-                aria-label="Document title"
+      <ViewportScale>
+        <div className="app">
+          <div className="title-bar">
+            <Link to="/docs" className="doc-icon-link" title="Back to documents">
+              <svg className="doc-icon" width="24" height="30" viewBox="0 0 24 24" fill="#4285f4">
+                <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z" />
+              </svg>
+            </Link>
+            <div className="title-area">
+              <div className="doc-title-row">
+                <input
+                  className="doc-title"
+                  value={title}
+                  onChange={handleTitleChange}
+                  aria-label="Document title"
+                />
+              </div>
+              <DocMenuBar
+                onOpenFindReplace={() => setFindReplaceOpen(true)}
+                onOpenWordCount={() => setWordCountOpen(true)}
+                onOpenKeyboardShortcuts={() => setShortcutsOpen(true)}
               />
             </div>
-            <DocMenuBar
-              onOpenFindReplace={() => setFindReplaceOpen(true)}
-              onOpenWordCount={() => setWordCountOpen(true)}
-              onOpenKeyboardShortcuts={() => setShortcutsOpen(true)}
-            />
+            <div className="title-bar-actions">
+              <button
+                type="button"
+                className="title-bar-export-btn"
+                onClick={() => void handleExportToContext()}
+                disabled={!editor || exportingToContext}
+                title="Export to Context library"
+                aria-label="Export to Context library"
+              >
+                {exportingToContext ? "Exporting…" : "Export to Context library"}
+              </button>
+            </div>
           </div>
-          <div className="title-bar-actions">
-            <button
-              type="button"
-              className="title-bar-export-btn"
-              onClick={() => void handleExportToContext()}
-              disabled={!editor || exportingToContext}
-              title="Export to Context library"
-              aria-label="Export to Context library"
-            >
-              {exportingToContext ? "Exporting…" : "Export to Context library"}
-            </button>
-          </div>
+          <Editor
+            key={id}
+            docId={id ?? undefined}
+            timelineDocumentId={id ?? undefined}
+            collapseSidePanelsOnMount={collapseSidePanelsOnMount}
+            initialContent={initialContent}
+            initialMonkeyTimeline={initialMonkeyTimeline}
+            subscriptionTier={subscriptionTier}
+            onSaveContent={handleSaveContent}
+            onEditorReady={setEditor}
+          />
         </div>
-        <Editor
-          key={id}
-          docId={id ?? undefined}
-          timelineDocumentId={id ?? undefined}
-          collapseSidePanelsOnMount={collapseSidePanelsOnMount}
-          initialContent={initialContent}
-          initialMonkeyTimeline={initialMonkeyTimeline}
-          subscriptionTier={subscriptionTier}
-          onSaveContent={handleSaveContent}
-          onEditorReady={setEditor}
+        {findReplaceOpen && (
+          <FindReplaceModal editor={editor} onClose={() => setFindReplaceOpen(false)} />
+        )}
+        {wordCountOpen && (
+          <WordCountModal editor={editor} onClose={() => setWordCountOpen(false)} />
+        )}
+        {shortcutsOpen && <KeyboardShortcutsModal onClose={() => setShortcutsOpen(false)} />}
+        <UpgradeModal
+          open={upgradeModalOpen}
+          reason={upgradeReason}
+          onClose={() => setUpgradeModalOpen(false)}
         />
-      </div>
-      {findReplaceOpen && (
-        <FindReplaceModal editor={editor} onClose={() => setFindReplaceOpen(false)} />
-      )}
-      {wordCountOpen && (
-        <WordCountModal editor={editor} onClose={() => setWordCountOpen(false)} />
-      )}
-      {shortcutsOpen && <KeyboardShortcutsModal onClose={() => setShortcutsOpen(false)} />}
-      <UpgradeModal
-        open={upgradeModalOpen}
-        reason={upgradeReason}
-        onClose={() => setUpgradeModalOpen(false)}
-      />
+      </ViewportScale>
     </EditorContext.Provider>
   );
 }
