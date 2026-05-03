@@ -543,7 +543,12 @@ export default function TrialOnboardingTour({
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const tipW = 360;
-    const tipH = step.showVideoPlaceholder ? 240 : 190;
+    const tipH =
+      step.id === "orchestrator"
+        ? 360
+        : step.showVideoPlaceholder
+          ? 260
+          : 190;
     const margin = 16;
     if (!r) {
       return { left: clamp(vw - tipW - 24, 24, vw - tipW - 24), top: clamp(152, 16, vh - tipH - 16) };

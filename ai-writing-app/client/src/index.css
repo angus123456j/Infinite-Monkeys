@@ -3112,6 +3112,22 @@ img.docs-folder-icon {
   opacity: 0.75;
 }
 
+[data-theme] .im-tour__card--orchestrator .im-tour__video,
+.im-tour__card--orchestrator .im-tour__video {
+  height: auto;
+  min-height: 160px;
+  padding: 14px 14px;
+  display: block;
+  align-items: initial;
+  justify-content: initial;
+  opacity: 0.95;
+  line-height: 1.45;
+}
+
+.im-tour__card--orchestrator .im-tour__video ul {
+  margin-top: 0;
+}
+
 .im-tour__actions {
   display: flex;
   gap: 10px;
