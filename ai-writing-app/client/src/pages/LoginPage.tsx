@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
+import { isRegisteredSession } from "../lib/auth";
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -19,10 +20,10 @@ export default function LoginPage() {
     let mounted = true;
     supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
-      if (data.session) navigate("/drive", { replace: true });
+      if (isRegisteredSession(data.session)) navigate("/drive", { replace: true });
     });
     const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
-      if (session) navigate("/drive", { replace: true });
+      if (isRegisteredSession(session)) navigate("/drive", { replace: true });
     });
     return () => {
       mounted = false;

@@ -3,6 +3,7 @@ import type { Editor as TiptapEditor } from "@tiptap/react";
 import { Decoration, type EditorView } from "@tiptap/pm/view";
 import { apiFetch, ScrutinyTrialQuotaError } from "../lib/api";
 import { supabase } from "../lib/supabase";
+import { callTrialDemoScrutiny } from "../lib/trialDemo";
 import { setScrutinyDecorations } from "../extensions/ScrutinyHighlight";
 import type { SubscriptionTier } from "../lib/subscriptions";
 import { dailyScrutinyLimitForTier } from "../lib/freeTierLimits";
@@ -292,17 +293,23 @@ function ScrutinyPanel({
         return;
       }
 
-      const { data: sess } = await supabase.auth.getSession();
-      const authHeaders: Record<string, string> = {};
-      if (sess.session?.access_token) {
-        authHeaders.Authorization = `Bearer ${sess.session.access_token}`;
-      }
+      let resp: ScrutinyResponse;
+      if (trialMode) {
+        // Public trial: unauthenticated demo route, no Supabase user.
+        resp = await callTrialDemoScrutiny<ScrutinyResponse>({ text, mode });
+      } else {
+        const { data: sess } = await supabase.auth.getSession();
+        const authHeaders: Record<string, string> = {};
+        if (sess.session?.access_token) {
+          authHeaders.Authorization = `Bearer ${sess.session.access_token}`;
+        }
 
-      const resp = await apiFetch<ScrutinyResponse>("/api/scrutiny/detect", {
-        method: "POST",
-        headers: authHeaders,
-        body: JSON.stringify({ text, mode }),
-      });
+        resp = await apiFetch<ScrutinyResponse>("/api/scrutiny/detect", {
+          method: "POST",
+          headers: authHeaders,
+          body: JSON.stringify({ text, mode }),
+        });
+      }
 
       if (scrutinyLimit != null) {
         try {

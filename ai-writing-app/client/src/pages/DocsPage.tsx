@@ -12,7 +12,7 @@ import {
   deleteDoc,
   deleteFolder,
 } from "../lib/docs";
-import { requireUserId } from "../lib/auth";
+import { isRegisteredSession, requireUserId } from "../lib/auth";
 import { listContexts, createContext, deleteContext, type ContextItem } from "../lib/contexts";
 import {
   isBakedInAgentName,
@@ -95,10 +95,10 @@ export default function DocsPage() {
     let mounted = true;
     supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
-      if (!data.session) navigate("/?skipIntro=1", { replace: true });
+      if (!isRegisteredSession(data.session)) navigate("/?skipIntro=1", { replace: true });
     });
     const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
-      if (!session) navigate("/?skipIntro=1", { replace: true });
+      if (!isRegisteredSession(session)) navigate("/?skipIntro=1", { replace: true });
     });
     return () => {
       mounted = false;

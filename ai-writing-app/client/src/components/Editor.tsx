@@ -50,6 +50,7 @@ import { listContexts } from "../lib/contexts";
 import { saveDoc } from "../lib/docs";
 import { extractSentenceContext } from "../lib/extractSentenceContext";
 import { supabase } from "../lib/supabase";
+import { callTrialDemoRewrite } from "../lib/trialDemo";
 import type { SubscriptionTier } from "../lib/subscriptions";
 import {
   FREE_TIER_DAILY_SENTENCES,
@@ -1753,6 +1754,17 @@ function Editor({
       contextIds?: string[] | null,
       sentenceContext?: string | null
     ): Promise<string> => {
+      // Trial mode: no Supabase user, no agents/contexts/sentence synonym mode.
+      // Hits the unauthenticated rewrite-demo edge function.
+      if (trialMode) {
+        const { rewrite } = await callTrialDemoRewrite({
+          text,
+          prompt: userPrompt,
+          llmProvider,
+        });
+        return rewrite;
+      }
+
       const payload: Record<string, unknown> = { text, prompt: userPrompt };
       if (agentId) payload.agentId = agentId;
       if (contextIds && contextIds.length) {
@@ -1790,7 +1802,7 @@ function Editor({
       }
       return (data as { rewrite: string }).rewrite;
     },
-    [llmProvider]
+    [llmProvider, trialMode]
   );
 
   const getSelectionInfo = useCallback(() => {

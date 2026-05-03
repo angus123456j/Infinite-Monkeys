@@ -1,12 +1,18 @@
 import { Link, useLocation } from "react-router-dom";
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { useCallback, useLayoutEffect, useState } from "react";
 import Editor from "../components/Editor";
 import EditorContext from "../contexts/EditorContext";
 import type { Editor as TiptapEditor } from "@tiptap/react";
 import TrialOnboardingTour from "../components/TrialOnboardingTour";
 import RouteErrorBoundary from "../components/RouteErrorBoundary";
 import ViewportScale from "../components/ViewportScale";
-import { supabase } from "../lib/supabase";
+import { clearAnonymousSession } from "../lib/auth";
+import {
+  hasUsedTrialRewrite,
+  hasUsedTrialScrutiny,
+  markTrialRewriteUsed,
+  markTrialScrutinyUsed,
+} from "../lib/trialDemo";
 import { shortcut } from "../lib/shortcuts";
 
 function TrialOverModal({
@@ -70,8 +76,8 @@ function TrialOverModal({
           </button>
         </div>
         <div style={{ fontSize: 16, lineHeight: 1.35, opacity: 0.92, color: "rgba(6, 18, 33, 0.92)" }}>
-          Sign up to continue using Rewrite and the AI side panels. Trial limits are enforced on the
-          server (about 3 rewrites and 1 AI scan per ~5 hours while you explore without an account).
+          Sign up to keep going. The free trial includes one Rewrite and one AI Scrutiny scan
+          per visit so you can sample the editor without an account.
         </div>
         <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}>
           <Link
@@ -103,7 +109,6 @@ export default function TrialEditorPage() {
   const location = useLocation();
   const autoIntro = (location.state as { autoIntro?: boolean } | null)?.autoIntro === true;
   const [uiPrimed, setUiPrimed] = useState(false);
-  const [anonReady, setAnonReady] = useState(false);
   const [paywallOpen, setPaywallOpen] = useState(false);
 
   useLayoutEffect(() => {
@@ -115,36 +120,25 @@ export default function TrialEditorPage() {
     } catch {
       /* ignore */
     }
+    // Defensive: if a stale anonymous Supabase session exists from a previous
+    // visit (pre-fix), clear it so it can never be mistaken for "logged in".
+    void clearAnonymousSession();
     setUiPrimed(true);
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
-        if (cancelled) return;
-        if (session?.user) {
-          setAnonReady(true);
-          return;
-        }
-        const { error } = await supabase.auth.signInAnonymously();
-        if (cancelled) return;
-        if (error) {
-          console.warn("[trial] signInAnonymously failed:", error.message);
-        }
-        setAnonReady(true);
-      } catch (e) {
-        console.warn("[trial] session bootstrap failed:", e);
-        if (!cancelled) setAnonReady(true);
+  const onTrialConsume = useCallback(
+    (action: "rewrite" | "scrutiny-selection" | "scrutiny-document"): boolean => {
+      if (action === "rewrite") {
+        if (hasUsedTrialRewrite()) return false;
+        markTrialRewriteUsed();
+        return true;
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+      if (hasUsedTrialScrutiny()) return false;
+      markTrialScrutinyUsed();
+      return true;
+    },
+    [],
+  );
 
   const onTrialGated = useCallback(
     (_action: "rewrite" | "scrutiny-selection" | "scrutiny-document") => {
@@ -162,7 +156,7 @@ export default function TrialEditorPage() {
             <TrialOnboardingTour
               startMode={autoIntro ? "immediate" : "after-interaction"}
               forceOpen={autoIntro}
-              targetsReady={uiPrimed && anonReady}
+              targetsReady={uiPrimed}
             />
             <div className="title-bar im-trial-titlebar">
               <Link to="/?skipIntro=1" className="doc-icon-link" title="Back to home">
@@ -180,7 +174,7 @@ export default function TrialEditorPage() {
               </div>
             </div>
 
-            {uiPrimed && anonReady ? (
+            {uiPrimed ? (
               <Editor
                 initialContent={`<p><strong>Welcome.</strong> This is a free trial document — nothing here is saved.</p>
 <p>Try rewriting: highlight the paragraph below, then press <strong>${shortcut("K")}</strong>.</p>
@@ -192,7 +186,7 @@ export default function TrialEditorPage() {
                 onSaveContent={undefined}
                 onEditorReady={setEditor}
                 trialMode
-                trialSkipClientQuota
+                onTrialConsume={onTrialConsume}
                 onTrialGated={onTrialGated}
               />
             ) : null}

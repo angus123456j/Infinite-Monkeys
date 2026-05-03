@@ -9,6 +9,7 @@ import {
 } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "../lib/supabase";
+import { isRegisteredSession } from "../lib/auth";
 import { getMySubscription, type SubscriptionTier } from "../lib/subscriptions";
 import { redirectToStripeCheckout, type PaidPlan } from "../lib/checkout";
 
@@ -302,7 +303,7 @@ export default function PricingPage() {
     let mounted = true;
     supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
-      if (!data.session) navigate("/login", { replace: true });
+      if (!isRegisteredSession(data.session)) navigate("/login", { replace: true });
     });
     return () => {
       mounted = false;

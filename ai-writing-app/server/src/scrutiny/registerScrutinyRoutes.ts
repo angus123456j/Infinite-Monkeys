@@ -8,6 +8,71 @@ type Limiter = ReturnType<typeof rateLimit>;
 
 type TrialEnforcer = (req: Request) => Promise<ScrutinyTrialBlock | null>;
 
+/**
+ * Run the ONNX classifier over the request body and return the standard
+ * scrutiny payload. Shared by the authenticated /api/scrutiny/detect route
+ * and the unauthenticated /api/scrutiny/detect-demo trial route.
+ */
+async function runScrutinyDetect(req: Request, res: Response): Promise<Response> {
+  const text = typeof req.body?.text === "string" ? req.body.text : "";
+  const mode =
+    req.body?.mode === "selection" || req.body?.mode === "document"
+      ? (req.body.mode as "selection" | "document")
+      : "document";
+  const thresholdRaw = Number(process.env.SCRUTINY_THRESHOLD ?? "0.72");
+  const threshold = Number.isFinite(thresholdRaw)
+    ? Math.max(0, Math.min(1, thresholdRaw))
+    : 0.72;
+
+  if (!text.trim()) {
+    return res.json({
+      mode,
+      model: { modelId: process.env.SCRUTINY_MODEL_ID ?? null },
+      threshold,
+      truncated: false,
+      overallProbability: 0,
+      sentences: [],
+    });
+  }
+
+  const maxCharsRaw = Number(process.env.SCRUTINY_MAX_CHARS ?? "20000");
+  const maxChars = Number.isFinite(maxCharsRaw) ? Math.max(2000, Math.round(maxCharsRaw)) : 20000;
+  const effectiveText = text.length > maxChars ? text.slice(0, maxChars) : text;
+  const truncated = effectiveText.length !== text.length;
+
+  const { meta, classify } = await getScrutinyClassifier();
+  const spans = splitSentences(effectiveText);
+
+  // Score each sentence; cap count to keep CPU latency sane.
+  const maxSentences = Number(process.env.SCRUTINY_MAX_SENTENCES ?? "64");
+  const limited = spans.slice(0, Number.isFinite(maxSentences) ? maxSentences : 64);
+
+  const scored = [];
+  let sum = 0;
+  for (const s of limited) {
+    const out = await classify(s.text);
+    const p = normalizeAiProbability(out);
+    sum += p;
+    scored.push({
+      text: s.text,
+      start: s.start,
+      end: s.end,
+      aiProbability: p,
+    });
+  }
+
+  const overall = scored.length ? sum / scored.length : 0;
+
+  return res.json({
+    mode,
+    model: meta,
+    threshold,
+    truncated,
+    overallProbability: overall,
+    sentences: scored,
+  });
+}
+
 export function registerScrutinyRoutes(options: {
   app: Express;
   limiter: Limiter;
@@ -22,66 +87,24 @@ export function registerScrutinyRoutes(options: {
       if (trialBlock) {
         return res.status(trialBlock.status).json(trialBlock.body);
       }
-
-      const text = typeof req.body?.text === "string" ? req.body.text : "";
-      const mode =
-        req.body?.mode === "selection" || req.body?.mode === "document"
-          ? (req.body.mode as "selection" | "document")
-          : "document";
-      const thresholdRaw = Number(process.env.SCRUTINY_THRESHOLD ?? "0.72");
-      const threshold = Number.isFinite(thresholdRaw)
-        ? Math.max(0, Math.min(1, thresholdRaw))
-        : 0.72;
-
-      if (!text.trim()) {
-        return res.json({
-          mode,
-          model: { modelId: process.env.SCRUTINY_MODEL_ID ?? null },
-          threshold,
-          truncated: false,
-          overallProbability: 0,
-          sentences: [],
-        });
-      }
-
-      const maxCharsRaw = Number(process.env.SCRUTINY_MAX_CHARS ?? "20000");
-      const maxChars = Number.isFinite(maxCharsRaw) ? Math.max(2000, Math.round(maxCharsRaw)) : 20000;
-      const effectiveText = text.length > maxChars ? text.slice(0, maxChars) : text;
-      const truncated = effectiveText.length !== text.length;
-
-      const { meta, classify } = await getScrutinyClassifier();
-      const spans = splitSentences(effectiveText);
-
-      // Score each sentence; cap count to keep CPU latency sane.
-      const maxSentences = Number(process.env.SCRUTINY_MAX_SENTENCES ?? "64");
-      const limited = spans.slice(0, Number.isFinite(maxSentences) ? maxSentences : 64);
-
-      const scored = [];
-      let sum = 0;
-      for (const s of limited) {
-        const out = await classify(s.text);
-        const p = normalizeAiProbability(out);
-        sum += p;
-        scored.push({
-          text: s.text,
-          start: s.start,
-          end: s.end,
-          aiProbability: p,
-        });
-      }
-
-      const overall = scored.length ? sum / scored.length : 0;
-
-      return res.json({
-        mode,
-        model: meta,
-        threshold,
-        truncated,
-        overallProbability: overall,
-        sentences: scored,
-      });
-    } catch (error: any) {
+      return await runScrutinyDetect(req, res);
+    } catch (error: unknown) {
       console.error("[scrutiny] detect failed:", error);
+      return res.status(500).json({ error: "Scrutiny detection failed" });
+    }
+  });
+
+  /**
+   * Unauthenticated trial scan for the public "Start writing" experience.
+   * No JWT, no shared-secret check, no anonymous-trial RPC. The single allowed
+   * call is enforced on the client (sessionStorage); the express-rate-limit
+   * `limiter` plus model latency act as the abuse backstop.
+   */
+  app.post("/api/scrutiny/detect-demo", limiter, async (req, res) => {
+    try {
+      return await runScrutinyDetect(req, res);
+    } catch (error: unknown) {
+      console.error("[scrutiny] detect-demo failed:", error);
       return res.status(500).json({ error: "Scrutiny detection failed" });
     }
   });

@@ -8,6 +8,7 @@ import {
   type MouseEvent,
 } from "react";
 import { supabase } from "../lib/supabase";
+import { isRegisteredSession } from "../lib/auth";
 import { redirectToStripeCheckout } from "../lib/checkout";
 
 const TIERS = [
@@ -245,7 +246,7 @@ function SignupTierPanel({ tier }: { tier: Tier }) {
                 return;
               }
               const { data } = await supabase.auth.getSession();
-              if (!data.session) {
+              if (!isRegisteredSession(data.session)) {
                 navigate(`/signup/free?plan=${tier.id}`);
                 return;
               }
