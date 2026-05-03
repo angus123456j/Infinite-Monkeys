@@ -76,7 +76,9 @@ export default function ConfirmEmailPage() {
             <img className="signup-auth__logo" src="/images/monkey.png" alt="" />
           </div>
 
-          <h1 className="signup-auth__headline">Confirm your email</h1>
+          <h1 className="signup-auth__headline">
+            {mode === "oauth" ? "Enjoy." : "Confirm your email"}
+          </h1>
 
           <main className="signup-auth__card" aria-label="Email confirmation">
             <p style={{ margin: "0 0 1rem", lineHeight: 1.5 }}>
@@ -84,7 +86,7 @@ export default function ConfirmEmailPage() {
                 <>
                   You’re signed in with{" "}
                   <strong style={{ fontWeight: 600 }}>{sessionEmail || "your Google account"}</strong>.
-                  You can continue to the Drive.
+                  Your account is ready.
                 </>
               ) : (
                 <>
@@ -119,7 +121,7 @@ export default function ConfirmEmailPage() {
                 style={{ width: "100%" }}
                 onClick={() => navigate(nextPath, { replace: true })}
               >
-                Continue to Drive
+                Enter Drive
               </button>
             ) : email ? (
               <button
