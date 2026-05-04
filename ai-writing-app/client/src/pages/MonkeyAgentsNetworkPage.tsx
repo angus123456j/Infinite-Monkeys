@@ -5,6 +5,7 @@ import NeuralNetworkScene, {
   type NeuralNetworkSceneHandle,
   type NeuralNode,
 } from "../components/NeuralNetworkScene";
+import Seo from "../components/Seo";
 import { agentsToFeatureMatrix } from "../lib/agentSemanticEmbedding";
 import { computeClusterTitles } from "../lib/clusterLabels";
 import { layoutClusteredNodes } from "../lib/clusterLayout";
@@ -150,6 +151,11 @@ export default function MonkeyAgentsNetworkPage() {
 
   return (
     <div className="monkey-agents-network-page">
+      <Seo
+        title="Monkey Agents Network — Infinite Monkeys"
+        description="Explore the Infinite Monkeys agent network and find specialist monkeys by category and search."
+        canonicalUrl="https://www.infinitemonkeys.world/monkey-agents-network"
+      />
       <header className="monkey-agents-network-header">
         <h1 className="monkey-agents-network-title">Monkey Agents Network</h1>
         <p className="monkey-agents-network-subtitle">

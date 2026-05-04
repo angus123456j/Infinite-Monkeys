@@ -1,0 +1,18 @@
+User-agent: *
+Allow: /
+
+# Private / app routes (not useful for search results)
+Disallow: /drive
+Disallow: /docs
+Disallow: /doc/
+Disallow: /context/
+Disallow: /monkey-agent/
+Disallow: /trial
+Disallow: /login
+Disallow: /signup
+Disallow: /confirm-email
+Disallow: /forgot-password
+Disallow: /reset-password
+Disallow: /billing/
+
+Sitemap: https://www.infinitemonkeys.world/sitemap.xml

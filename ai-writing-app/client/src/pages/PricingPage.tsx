@@ -12,6 +12,7 @@ import { supabase } from "../lib/supabase";
 import { isRegisteredSession } from "../lib/auth";
 import { getMySubscription, type SubscriptionTier } from "../lib/subscriptions";
 import { redirectToStripeCheckout, type PaidPlan } from "../lib/checkout";
+import Seo from "../components/Seo";
 
 type Plan = PaidPlan;
 
@@ -352,6 +353,11 @@ export default function PricingPage() {
 
   return (
     <div className="signup-page">
+      <Seo
+        title="Pricing — Infinite Monkeys"
+        description="Plans for Infinite Monkeys: Free, Pro, and Infinite."
+        canonicalUrl="https://www.infinitemonkeys.world/pricing"
+      />
       <div className="signup-page__ambient" aria-hidden>
         <span className="signup-page__blob signup-page__blob--a" />
         <span className="signup-page__blob signup-page__blob--b" />

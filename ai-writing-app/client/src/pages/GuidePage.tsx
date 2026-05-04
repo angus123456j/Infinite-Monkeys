@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
+import Seo from "../components/Seo";
 
 type Node =
   | { type: "h1" | "h2" | "h3"; text: string; id: string }
@@ -609,6 +610,11 @@ export default function GuidePage() {
 
   return (
     <div className="im-guide">
+      <Seo
+        title="Guide — Infinite Monkeys"
+        description="How to use Infinite Monkeys: the editor, monkey agents, context library, and orchestrator."
+        canonicalUrl="https://www.infinitemonkeys.world/guide"
+      />
       <aside className="im-guide-sidebar" aria-label="Guide navigation">
         <div className="im-guide-sidebar-inner">
           <div className="im-guide-brand">Infinite Monkeys</div>

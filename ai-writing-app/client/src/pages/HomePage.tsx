@@ -10,6 +10,7 @@ import {
   type MouseEvent,
 } from "react";
 import { supabase } from "../lib/supabase";
+import Seo from "../components/Seo";
 
 const VIDEO_PATH = "/models/monkeyvid.mp4";
 const HERO_DEMO_VIDEO_PATH = "/videos/beautifuldemo.mp4";
@@ -524,6 +525,11 @@ export default function HomePage() {
 
   return (
     <div className="home-page home-page--modern">
+      <Seo
+        title="Infinite Monkeys — AI writing agents for rewrites"
+        description="Infinite Monkeys is an AI writing app with specialist monkeys (agents) for rewrites, expansion, detection, and context-aware editing."
+        canonicalUrl="https://www.infinitemonkeys.world/"
+      />
       {!introDone && (
         <section className="home-video-section" aria-label="Intro">
           <video
